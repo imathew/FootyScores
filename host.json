@@ -18,5 +18,11 @@
     "allowedOrigins": [
       "*"
     ]
-  }
+  },
+  "functions": [
+    {
+      "name": "PlayerScores",
+      "authLevel": "anonymous"
+    }
+  ]
 }
