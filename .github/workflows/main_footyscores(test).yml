@@ -40,4 +40,4 @@ jobs:
           app-name: 'footyscores'
           slot-name: 'test'
           package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_277639F8D81F4084B23BF4D7739FB12C }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_E2D4B8FF4E754FE995B5C43A886A0D05 }}
