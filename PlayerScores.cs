@@ -18,6 +18,7 @@ namespace FootyScores
         private static readonly int MIN_CACHE_LIFETIME_SECONDS = 30;  // cache any API calls for at least this long
         private static readonly int ROUND_CHANGE_DAYS = 2;            // How many days from the next round do we switch to it?
 
+        // our custom scoring
         private static readonly Dictionary<string, int> SCORING = new()
         {
             { "K", 4 }, { "H", 2 }, { "G", 8 }, { "B", 1 }, { "T", 4 },
@@ -25,11 +26,13 @@ namespace FootyScores
             { "M", 1 }, { "HO", 1 }, { "CP", 1 }, { "R50", 1 }
         };
 
+        // player positions
         private static readonly Dictionary<int, string> POSITIONS = new()
         {
             {1, "B" }, {2, "C" }, {3, "R" }, {4, "F"}
         };
 
+        // squads and venues are fairly static so just define them here
         private const string SQUADS = """
             [{"id":10,"full_name":"City of Churches","name":"Crows","short_name":"ADE"}
             ,{"id":20,"full_name":"Fitzroy","name":"Lions","short_name":"BRL"}
@@ -80,16 +83,19 @@ namespace FootyScores
         private static readonly BlobServiceClient _blobServiceClient = new(Environment.GetEnvironmentVariable("AZURE_STORAGE_CONNECTION_STRING"));
         private static readonly TimeZoneInfo _timeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById("Australia/Melbourne");
         private static readonly BlobContainerClient _containerClient = _blobServiceClient.GetBlobContainerClient("playerscores-cache");
+        private static readonly Dictionary<string, string> _headers;
+        private static DateTimeOffset _now;
 
         private static readonly string _allowedOrigin;
         private static readonly string _apiBaseUrl;
         private static readonly string _apiRoundsUrl;
         private static readonly string _apiPlayersUrl;
-        private static readonly Dictionary<string, string> _headers;
-        private static DateTimeOffset _now;
+        private static readonly string _outputCacheFilename;
+        private static readonly string _playersCacheFilename;
 
         static PlayerScores()
         {
+            // dev settings
             var config = new ConfigurationBuilder()
                 .AddJsonFile("local.settings.json", optional: true, reloadOnChange: true)
                 .AddEnvironmentVariables()
@@ -99,6 +105,8 @@ namespace FootyScores
             _apiBaseUrl = config["API_BASE_URL"]!;
             _apiRoundsUrl = config["API_ROUNDS_URL"]!;
             _apiPlayersUrl = config["API_PLAYERS_URL"]!;
+            _outputCacheFilename = config["OUTPUT_CACHE_FILENAME"]!;
+            _playersCacheFilename = config["PLAYERS_CACHE_FILENAME"]!;
 
             _headers = new Dictionary<string, string>
             {
@@ -108,18 +116,18 @@ namespace FootyScores
                 { "Access-Control-Allow-Headers", "Content-Type" }
             };
 
+            // ensure the storage container is present
             _containerClient.CreateIfNotExistsAsync().Wait();
         }
-
 
         [Function("PlayerScores")]
         public static async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestData req)
         {
             _now = new DateTimeOffset(TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.UtcNow.DateTime, _timeZoneInfo), _timeZoneInfo.GetUtcOffset(DateTimeOffset.UtcNow));
 
-            var closestRound = await GetCurrentRoundAsync();
+            var currentRound = await GetCurrentRoundAsync();
 
-            if (closestRound != null)
+            if (currentRound != null)
             {
                 var response = req.CreateResponse(System.Net.HttpStatusCode.OK);
                 foreach (var header in _headers)
@@ -132,24 +140,21 @@ namespace FootyScores
                     using (var gzipStream = new GZipStream(outputStream, CompressionMode.Compress))
                     {
                         // generate the HTML output
-                        string htmlOutput = await GenerateHtmlOutputAsync(closestRound);
+                        string htmlOutput = await GenerateHtmlOutputAsync(currentRound);
                         var bytes = Encoding.UTF8.GetBytes(htmlOutput);
                         await gzipStream.WriteAsync(bytes);
                     }
 
-                    // Get compressed bytes
+                    // compress and b64 encode
                     var compressedBytes = outputStream.ToArray();
-
-                    // Base64 encode the compressed data
                     var base64Data = Convert.ToBase64String(compressedBytes);
-
-                    // Return the base64 encoded data
                     await response.WriteStringAsync(base64Data);
                 }
 
                 return response;
             }
 
+            // return an error if it gets this far
             var errorResponse = req.CreateResponse(System.Net.HttpStatusCode.InternalServerError);
             foreach (var header in _headers)
             {
@@ -163,7 +168,8 @@ namespace FootyScores
             var htmlBuilder = new StringBuilder();
             DateTimeOffset lastModified = GetNow();
 
-            (string? cachedHtml, DateTimeOffset cachedLastModified) = await GetCachedDataAsync($"output.html.gz",
+            // get and/or save to the cache, as appropriate
+            (string? cachedHtml, DateTimeOffset cachedLastModified) = await GetCachedDataAsync($"{_outputCacheFilename}",
                 () => GetCacheExpiry(closestRound),
                 async () =>
                 {
@@ -183,7 +189,8 @@ namespace FootyScores
 
                     htmlBuilder.AppendLine(@"</table>");
 
-                    return CompressData(htmlBuilder.ToString()); // Compress the HTML output before caching
+                    // cache the data compressed
+                    return CompressData(htmlBuilder.ToString());
                 });
 
             if (cachedHtml == null)
@@ -193,7 +200,8 @@ namespace FootyScores
             }
             else
             {
-                cachedHtml = DecompressData(cachedHtml); // Decompress the cached HTML output
+                // decompress the data
+                cachedHtml = DecompressData(cachedHtml);
                 lastModified = cachedLastModified;
             }
 
@@ -265,14 +273,15 @@ namespace FootyScores
 
         private static async Task<(JsonArray? data, DateTimeOffset lastModified)> GetPlayerDataAsync()
         {
-            (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync("players.json.gz", GetMidnight,
+            // get and/or save to the cache, as appropriate
+            (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync($"{_playersCacheFilename}", GetMidnight,
                 async () => {
                     var jsonData = await MakeRequestAsync($"{_apiBaseUrl}/{_apiPlayersUrl}");
-                    return CompressData(jsonData?.ToJsonString()); // Compress the data before caching
+                    return CompressData(jsonData?.ToJsonString()); // cache the compressed data
                 });
             if (cachedData != null)
             {
-                var decompressedData = DecompressData(cachedData);
+                var decompressedData = DecompressData(cachedData); // return decompressed data
                 return (JsonNode.Parse(decompressedData)?.AsArray(), lastModified);
             }
             return (null, lastModified);
@@ -486,10 +495,10 @@ namespace FootyScores
             var matchDate = DateTimeOffset.Parse(match["date"]!.ToString());
             var matchDateStr = matchDate.ToString("MMMM d, h:mmtt");
 
-            // Convert match time to local time
+            // convert match time to local time
             var localDate = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(matchDate, timezoneStr);
 
-            // Check if local time is different from match time
+            // check if local time is different from match time
             if (localDate.TotalOffsetMinutes != matchDate.TotalOffsetMinutes)
             {
                 return $"{matchDateStr} ({localDate:h:mmtt})";
@@ -600,7 +609,6 @@ namespace FootyScores
         private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync)
         {
             var blobClient = _containerClient.GetBlobClient(blobName);
-            await _containerClient.CreateIfNotExistsAsync();
 
             if (await IsCacheValid(blobClient))
             {
@@ -667,24 +675,24 @@ namespace FootyScores
 
             if (currentRound is JsonObject roundObject && roundObject["matches"] is JsonArray matches)
             {
-                // Use the short cache if any match in the current round is live
+                // use the short cache if any match in the current round is live
                 if (matches.Any(match => match?["status"]?.ToString() == "playing"))
                 {
                     return GetNow().AddSeconds(MIN_CACHE_LIFETIME_SECONDS);
                 }
                 else
                 {
-                    // Find the next scheduled match in the round
+                    // find the next scheduled match in the round
                     var nextScheduledMatch = matches.FirstOrDefault(match => match?["status"]?.ToString() == "scheduled");
 
                     if (nextScheduledMatch != null)
                     {
-                        // Cache until the start time of the next scheduled matchid
+                        // cache until the start time of the next scheduled matchid
                         return DateTimeOffset.Parse(nextScheduledMatch["date"]!.ToString());
                     } 
                     else
                     {
-                        // Cache until midnight if no scheduled matches remain
+                        // cache until midnight if no scheduled matches remain
                         return GetMidnight();
                     }
                 }
@@ -696,13 +704,14 @@ namespace FootyScores
 
         private static DateTimeOffset GetMidnight()
         {
-            // return the first instance of tomorrow
+            // return the first moment of tomorrow
             var currentTime = GetNow();
             return new
                 DateTimeOffset(currentTime.Year, currentTime.Month, currentTime.Day, 0, 0, 0, _timeZoneInfo.BaseUtcOffset)
                 .AddDays(1);
         }
 
+        // melb time, baby!
         private static DateTimeOffset GetNow()
         {
             return _now;
