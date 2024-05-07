@@ -115,15 +115,16 @@ namespace FootyScores
                 { "Access-Control-Allow-Methods", "GET, POST, OPTIONS" },
                 { "Access-Control-Allow-Headers", "Content-Type" }
             };
-
-            // ensure the storage container is present
-            _containerClient.CreateIfNotExistsAsync().Wait();
         }
 
         [Function("PlayerScores")]
         public static async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestData req)
         {
+            // get the current time to use for the rest of this call
             _now = new DateTimeOffset(TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.UtcNow.DateTime, _timeZoneInfo), _timeZoneInfo.GetUtcOffset(DateTimeOffset.UtcNow));
+            
+            // ensure the storage container is present
+            _containerClient.CreateIfNotExistsAsync().Wait();
 
             var currentRound = await GetCurrentRoundAsync();
 
