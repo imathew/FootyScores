@@ -82,10 +82,11 @@ namespace FootyScores
         private static readonly BlobContainerClient _containerClient = _blobServiceClient.GetBlobContainerClient("playerscores-cache");
 
         private static readonly string _allowedOrigin;
-        private static readonly Dictionary<string, string> _headers;
         private static readonly string _apiBaseUrl;
         private static readonly string _apiRoundsUrl;
         private static readonly string _apiPlayersUrl;
+        private static readonly Dictionary<string, string> _headers;
+        private static DateTimeOffset _now;
 
         static PlayerScores()
         {
@@ -101,8 +102,7 @@ namespace FootyScores
 
             _headers = new Dictionary<string, string>
             {
-                { "Content-Type", "text/html; charset=utf-8" },
-                { "Content-Encoding", "gzip" },
+                { "Content-Type", "text/plain; charset=utf-8" },
                 { "Access-Control-Allow-Origin", _allowedOrigin },
                 { "Access-Control-Allow-Methods", "GET, POST, OPTIONS" },
                 { "Access-Control-Allow-Headers", "Content-Type" }
@@ -111,9 +111,12 @@ namespace FootyScores
             _containerClient.CreateIfNotExistsAsync().Wait();
         }
 
+
         [Function("PlayerScores")]
-        public static async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Function, "get", "post")] HttpRequestData req)
+        public static async Task<HttpResponseData> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestData req)
         {
+            _now = new DateTimeOffset(TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.UtcNow.DateTime, _timeZoneInfo), _timeZoneInfo.GetUtcOffset(DateTimeOffset.UtcNow));
+
             var closestRound = await GetCurrentRoundAsync();
 
             if (closestRound != null)
@@ -134,8 +137,14 @@ namespace FootyScores
                         await gzipStream.WriteAsync(bytes);
                     }
 
+                    // Get compressed bytes
                     var compressedBytes = outputStream.ToArray();
-                    await response.Body.WriteAsync(compressedBytes);
+
+                    // Base64 encode the compressed data
+                    var base64Data = Convert.ToBase64String(compressedBytes);
+
+                    // Return the base64 encoded data
+                    await response.WriteStringAsync(base64Data);
                 }
 
                 return response;
@@ -152,109 +161,172 @@ namespace FootyScores
         private static async Task<string> GenerateHtmlOutputAsync(JsonNode closestRound)
         {
             var htmlBuilder = new StringBuilder();
+            DateTimeOffset lastModified = GetNow();
 
-            htmlBuilder.Append($@"
-<h1 title='Refresh' class='refresh-button'>The Masters &ndash; Round {closestRound["id"]}</h1>
+            (string? cachedHtml, DateTimeOffset cachedLastModified) = await GetCachedDataAsync($"output.html.gz",
+                () => GetCacheExpiry(closestRound),
+                async () =>
+                {
+                    htmlBuilder.Append($@"
+<h1 title='Updated: {lastModified:MMMM d, h:mmtt}' class='refresh-button'>The Masters &ndash; Round {closestRound["id"]}</h1>
 <table>
 ");
 
-            if (closestRound["matches"] is JsonArray matches)
+                    if (closestRound["matches"] is JsonArray matches)
+                    {
+                        var (players, _) = await GetPlayerDataAsync();
+                        var statsData = await GetPlayerStatsAsync(closestRound);
+                        var scores = statsData?["playerScores"] as JsonObject;
+
+                        htmlBuilder.Append(GenerateMatchHtml(matches, players!, scores!, _squads!, _venues!, statsData));
+                    }
+
+                    htmlBuilder.AppendLine(@"</table>");
+
+                    return CompressData(htmlBuilder.ToString()); // Compress the HTML output before caching
+                });
+
+            if (cachedHtml == null)
             {
-                var statsData = await GetPlayerStatsAsync(closestRound);
-                var scores = statsData?["playerScores"] as JsonObject;
-                var players = await GetPlayerDataAsync();
-                var sortedMatches = matches.OrderBy(m => m, new MatchComparer());
-
-                foreach (var match in sortedMatches)
-                {
-                    var status = match!["status"]?.ToString() ?? string.Empty;
-
-                    htmlBuilder.AppendLine($@"
-<thead><tr class='blank_header'><td colspan='18'></td></tr>");
-
-                    htmlBuilder.Append(GetMatchHtml(match, _squads!, _venues!));
-
-                    htmlBuilder.AppendLine($@"
-<tr class='stats_header'><th colspan='2' class='minion'>Minion</th><th class='pos_head'>Pos</th><th>AF</th><th>ToG</th>{string.Join(string.Empty, SCORING.Select(stat => $"<th title='{stat.Value}' class='stat_head'>{stat.Key}</th>"))}</tr></thead>");
-
-                    if (players != null)
-                    {
-                        var matchPlayers = GetMatchPlayers(match, players);
-                        htmlBuilder.Append(GetPlayersHtml(matchPlayers.Where(p => p != null)!.Cast<JsonNode>(), scores!, _squads!, statsData as JsonObject, status));
-                    }
-                    else
-                    {
-                        htmlBuilder.AppendLine(@"</thead>");
-                    }
-                }
+                cachedHtml = htmlBuilder.ToString();
+                lastModified = GetNow();
+            }
+            else
+            {
+                cachedHtml = DecompressData(cachedHtml); // Decompress the cached HTML output
+                lastModified = cachedLastModified;
             }
 
-            htmlBuilder.AppendLine(@"</table>");
+            var nowStr = lastModified.ToString("MMMM d, h:mmtt");
+            var htmlOutput = cachedHtml.Replace("class='refresh-button'>", $"title='{nowStr}' class='refresh-button'>");
+
+            return htmlOutput;
+        }
+
+        private static string GenerateMatchHtml(JsonArray matches, JsonArray players, JsonObject scores, JsonArray squads, JsonArray venues, JsonObject? statsData)
+        {
+            var htmlBuilder = new StringBuilder();
+
+            var sortedMatches = matches.OrderBy(m => m, new MatchComparer());
+
+            foreach (var m in sortedMatches)
+            {
+                var status = m!["status"]?.ToString() ?? string.Empty;
+
+                htmlBuilder.AppendLine($@"
+<thead><tr class='blank_header'><td colspan='18'></td></tr>");
+
+                htmlBuilder.Append(GetMatchHtml(m, squads!, venues!));
+
+                htmlBuilder.AppendLine($@"
+<tr class='stats_header'><th colspan='2' class='minion'>Minion</th><th class='pos_head'>Pos</th><th>AF</th><th>ToG</th>{string.Join(string.Empty, SCORING.Select(stat => $"<th title='{stat.Value}' class='stat_head'>{stat.Key}</th>"))}</tr></thead>");
+
+                if (players != null)
+                {
+                    var matchPlayers = GetMatchPlayers(m, players);
+                    htmlBuilder.Append(GetPlayersHtml(matchPlayers.Where(p => p != null)!.Cast<JsonNode>(), scores!, squads!, statsData, status));
+                }
+                else
+                {
+                    htmlBuilder.AppendLine(@"</thead>");
+                }
+            }
 
             return htmlBuilder.ToString();
         }
 
         private static async Task<JsonNode?> GetCurrentRoundAsync()
         {
-            return await GetCachedDataAsync<JsonNode>("round.json", GetCacheExpiry, async () =>
+            if (await MakeRequestAsync($"{_apiBaseUrl}/{_apiRoundsUrl}") is JsonArray roundsData)
             {
-                if (await MakeRequestAsync($"{_apiBaseUrl}/{_apiRoundsUrl}") is JsonArray roundsData)
-                {
-                    var now = GetNow();
-                    var today = now.Date;
-                    var roundChange = today.AddDays(ROUND_CHANGE_DAYS);
+                var now = GetNow();
+                var today = now.Date;
+                var roundChange = today.AddDays(ROUND_CHANGE_DAYS);
 
-                    var currentRound = roundsData
-                        .Select(roundData =>
-                        {
-                            var start = DateTimeOffset.Parse(roundData!["start"]!.GetValue<string>());
-                            var end = DateTimeOffset.Parse(roundData!["end"]!.GetValue<string>());
-                            return new { Round = roundData, Start = start, End = end };
-                        })
-                        .OrderByDescending(roundInfo => roundInfo.Start)
-                        .FirstOrDefault(roundInfo =>
-                        {
-                            var startDate = roundInfo.Start.Date;
-                            return startDate <= today || (startDate >= today && startDate <= roundChange);
-                        });
-
-                    return currentRound?.Round;
-                }
-
-                return null;
-            });
-        }
-
-        private static async Task<JsonArray?> GetPlayerDataAsync()
-        {
-            return await GetCachedDataAsync<JsonArray>("players.json", GetCacheExpiry, async () =>
-            {
-                return await MakeRequestAsync($"{_apiBaseUrl}/{_apiPlayersUrl}") as JsonArray;
-            });
-        }
-
-        private static async Task<JsonObject?> GetPlayerStatsAsync(JsonNode closestRound)
-        {
-            int roundNumber = closestRound["id"]!.GetValue<int>();
-
-            return await GetCachedDataAsync<JsonObject>($"stats{roundNumber}.json", GetCacheExpiry, async () =>
-            {
-                JsonObject? statsData = await MakeRequestAsync($"{_apiBaseUrl}/stats/{roundNumber}.json") as JsonObject;
-
-                if (statsData != null)
-                {
-                    var playerScores = new JsonObject();
-                    foreach (var playerStats in statsData)
+                var currentRound = roundsData
+                    .Select(roundData =>
                     {
-                        var playerId = playerStats.Key;
-                        var score = playerStats.Value?.AsObject().Sum(p => SCORING.GetValueOrDefault(p.Key, 0) * p.Value!.GetValue<int>()) ?? 0;
-                        playerScores[playerId] = score;
-                    }
-                    statsData["playerScores"] = playerScores;
-                }
+                        var start = DateTimeOffset.Parse(roundData!["start"]!.GetValue<string>());
+                        var end = DateTimeOffset.Parse(roundData!["end"]!.GetValue<string>());
+                        return new { Round = roundData, Start = start, End = end };
+                    })
+                    .OrderByDescending(roundInfo => roundInfo.Start)
+                    .FirstOrDefault(roundInfo =>
+                    {
+                        var startDate = roundInfo.Start.Date;
+                        return startDate <= today || (startDate >= today && startDate <= roundChange);
+                    });
 
-                return statsData;
-            });
+                return currentRound?.Round;
+            }
+
+            return null;
+        }
+
+        private static async Task<(JsonArray? data, DateTimeOffset lastModified)> GetPlayerDataAsync()
+        {
+            (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync("players.json.gz", GetMidnight,
+                async () => {
+                    var jsonData = await MakeRequestAsync($"{_apiBaseUrl}/{_apiPlayersUrl}");
+                    return CompressData(jsonData?.ToJsonString()); // Compress the data before caching
+                });
+            if (cachedData != null)
+            {
+                var decompressedData = DecompressData(cachedData);
+                return (JsonNode.Parse(decompressedData)?.AsArray(), lastModified);
+            }
+            return (null, lastModified);
+        }
+
+        private static string CompressData(string? data)
+        {
+            if (string.IsNullOrEmpty(data))
+                return string.Empty;
+
+            using (var outputStream = new MemoryStream())
+            {
+                using (var gZipStream = new GZipStream(outputStream, CompressionMode.Compress))
+                using (var writer = new StreamWriter(gZipStream))
+                {
+                    writer.Write(data);
+                }
+                return Convert.ToBase64String(outputStream.ToArray());
+            }
+        }
+
+        private static string DecompressData(string compressedData)
+        {
+            if (string.IsNullOrEmpty(compressedData))
+                return string.Empty;
+
+            var gZipBuffer = Convert.FromBase64String(compressedData);
+            using (var inputStream = new MemoryStream(gZipBuffer))
+            using (var gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+            using (var reader = new StreamReader(gZipStream))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
+        private static async Task<JsonObject?> GetPlayerStatsAsync(JsonNode currentRound)
+        {
+            int roundNumber = currentRound["id"]!.GetValue<int>();
+
+            JsonObject? statsData = await MakeRequestAsync($"{_apiBaseUrl}/stats/{roundNumber}.json") as JsonObject;
+
+            if (statsData != null)
+            {
+                var playerScores = new JsonObject();
+                foreach (var playerStats in statsData)
+                {
+                    var playerId = playerStats.Key;
+                    var score = playerStats.Value?.AsObject().Sum(p => SCORING.GetValueOrDefault(p.Key, 0) * p.Value!.GetValue<int>()) ?? 0;
+                    playerScores[playerId] = score;
+                }
+                statsData["playerScores"] = playerScores;
+            }
+
+            return statsData;
         }
 
         private static string GetPlayersHtml(IEnumerable<JsonNode> players, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus)
@@ -277,24 +349,31 @@ namespace FootyScores
                 })
                 .Take(subset);
 
+            int gameRank = 1;
             foreach (var player in sortedPlayers)
             {
-                var playerHtml = GetPlayerHtml(player, scores, squads, statsData, matchStatus);
+                var playerHtml = GetPlayerHtml(player, scores, squads, statsData, matchStatus, gameRank);
 
                 if (!string.IsNullOrEmpty(playerHtml))
                 {
                     htmlBuilder.AppendLine(playerHtml);
                 }
+
+                gameRank++;
             }
 
-            return htmlBuilder.ToString();
+            // return a "pending" notice if there's no data at this point, as it's probably near the start of a live match
+            string ret = htmlBuilder.ToString();
+            return string.IsNullOrWhiteSpace(ret)
+                ? "<tr class='stats_row'><td></td><td class='pending' colspan='17'>No data yet</td></tr>"
+                : ret;
         }
 
-        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus)
+        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus, int gameRank)
         {
             var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == player["squad_id"]!.GetValue<int>());
-            var team = squad?["name"]?.GetValue<string>() ?? string.Empty;
-            var teamShort = squad?["short_name"]?.GetValue<string>() ?? string.Empty;
+            var team = squad?["name"]?.GetValue<string>() ?? "Unknown";
+            var teamShort = squad?["short_name"]?.GetValue<string>() ?? "UNK";
 
             var playerName = $"{player["first_name"]} {player["last_name"]}";
             var playerClass = playerName.Length >= PLAYER_NAME_LENGTH_SQUISH ? "playername long" : "playername";
@@ -305,7 +384,8 @@ namespace FootyScores
             var sortedPositions = playerPositions.Select(p => new { Id = p, Letter = POSITIONS.GetValueOrDefault(p, "") })
                                                  .OrderBy(p => p.Id)
                                                  .Select(p => p.Letter);
-            var positionString = string.Join("", sortedPositions);
+
+            var positionString = string.Concat(sortedPositions);
 
             var playerRecord = statsData?[player["id"]!.ToString()];
 
@@ -323,7 +403,7 @@ namespace FootyScores
                     statCells.Append($"<td title='{stat.Value * statValue}' class='stat'>{statValue}</td>");
                 }
 
-                return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
+                return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td title='Game rank: {gameRank}' class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
             }
             else if (matchStatus == "scheduled")
             {
@@ -344,17 +424,17 @@ namespace FootyScores
             var awaySquad = squads.FirstOrDefault(squad => squad!["id"]!.GetValue<int>() == match["away_squad_id"]!.GetValue<int>());
             var venueElem = venues.FirstOrDefault(v => v!["id"]!.GetValue<int>() == match["venue_id"]!.GetValue<int>());
 
-            var homeTeam = homeSquad?["name"]?.ToString() ?? string.Empty;
-            var homeTeamFull = homeSquad?["full_name"]?.ToString() ?? string.Empty;
-            var awayTeam = awaySquad?["name"]?.ToString() ?? string.Empty;
-            var awayTeamFull = awaySquad?["full_name"]?.ToString() ?? string.Empty;
-            var venue = venueElem?["short_name"]?.ToString() ?? string.Empty;
-            var venueAlt = venueElem?["name"]?.ToString() ?? string.Empty;
+            var homeTeam = homeSquad?["name"]?.ToString() ?? "Unknown";
+            var homeTeamFull = homeSquad?["full_name"]?.ToString() ?? "Unknown Team";
+            var awayTeam = awaySquad?["name"]?.ToString() ?? "Unknown";
+            var awayTeamFull = awaySquad?["full_name"]?.ToString() ?? "Unknown Team";
+            var venue = venueElem?["short_name"]?.ToString() ?? "Unknown";
+            var venueAlt = venueElem?["name"]?.ToString() ?? "Unknown Ground";
 
-            var timeStr = FormatMatchTime(match, venueElem?["timezone"]?.ToString() ?? string.Empty);
+            var timeStr = FormatMatchTime(match, venueElem?["timezone"]?.ToString() ?? "Australia/Melbourne");
             var matchScore = FormatMatchScore(match);
 
-            return $@"<tr class='match_header {homeTeam.ToLower()}'><td colspan='18'><span title='{homeTeamFull}' class='teamname home'>{homeTeam}</span>{matchScore["home"]} - {matchScore["away"]}<span title='{awayTeamFull}' class='teamname away'>{awayTeam}</span><span class='matchtime'>{timeStr}</span> @ <span title='{venueAlt}' class='venuename'>{venue}</span></td></tr>{System.Environment.NewLine}";
+            return $@"<tr class='match_header {homeTeam.ToLower()}'><td colspan='18'><span title='{homeTeamFull}' class='teamname home'>{homeTeam}</span>{matchScore["home"]} - {matchScore["away"]}<span title='{awayTeamFull}' class='teamname away'>{awayTeam}</span><span class='matchtime'>{timeStr}</span> @ <span title='{venueAlt}' class='venuename'>{venue}</span></td></tr>";
         }
 
         private static Dictionary<string, string> FormatMatchScore(JsonNode match)
@@ -517,69 +597,80 @@ namespace FootyScores
             private static partial Regex MatchStatus();
         }
 
-        private static async Task<T?> GetCachedDataAsync<T>(string blobName, Func<T, DateTimeOffset> getCacheExpiry, Func<Task<T?>>? fetchData = null)
-            where T : JsonNode
+        private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync)
         {
-            fetchData ??= () => Task.FromResult(default(T));
-
             var blobClient = _containerClient.GetBlobClient(blobName);
-
-            // Create the container if it doesn't exist
             await _containerClient.CreateIfNotExistsAsync();
 
-            if (await blobClient.ExistsAsync())
+            if (await IsCacheValid(blobClient))
             {
-                var blobProperties = await blobClient.GetPropertiesAsync();
-                if (blobProperties.Value.Metadata.TryGetValue("ExpiresOn", out var expiresOnString) &&
-                    DateTimeOffset.TryParse(expiresOnString, out var cachedExpiresOn) &&
-                    cachedExpiresOn > GetNow())
-                {
-                    using var stream = new MemoryStream();
-                    await blobClient.DownloadToAsync(stream);
-                    stream.Position = 0;
-                    var data = await JsonSerializer.DeserializeAsync<T>(stream);
-                    return data;
-                }
+                return await GetCachedData(blobClient);
             }
 
-            T? fetchedData = await fetchData();
-
+            string? fetchedData = await fetchDataAsync();
             if (fetchedData != null)
             {
-                var cacheExpiry = getCacheExpiry(fetchedData);
-
-                using var stream = new MemoryStream();
-                await JsonSerializer.SerializeAsync(stream, fetchedData);
-                stream.Position = 0;
-
-                await blobClient.UploadAsync(stream, overwrite: true);
-
-                var metadata = new Dictionary<string, string>
-                {
-                    { "ExpiresOn", cacheExpiry.ToString("o") }
-                };
-                await blobClient.SetMetadataAsync(metadata);
-
-                var httpHeaders = new BlobHttpHeaders
-                {
-                    ContentType = "application/json",
-                    CacheControl = "public, max-age=86400"
-                };
-                await blobClient.SetHttpHeadersAsync(httpHeaders);
+                await UpdateCache(blobClient, fetchedData, getCacheExpiry());
             }
 
-            return fetchedData;
+            return (fetchedData, GetNow());
+        }
+
+        private static async Task<bool> IsCacheValid(BlobClient blobClient)
+        {
+            if (!await blobClient.ExistsAsync())
+            {
+                return false;
+            }
+
+            var blobProperties = await blobClient.GetPropertiesAsync();
+            if (!blobProperties.Value.Metadata.TryGetValue("ExpiresOn", out var expiresOnString) ||
+                !DateTimeOffset.TryParse(expiresOnString, out var cachedExpiresOn) ||
+                cachedExpiresOn <= GetNow())
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static async Task<(string data, DateTimeOffset lastModified)> GetCachedData(BlobClient blobClient)
+        {
+            var blobProperties = await blobClient.GetPropertiesAsync();
+            var lastModified = blobProperties.Value.LastModified;
+            using var stream = new MemoryStream();
+            await blobClient.DownloadToAsync(stream);
+            stream.Position = 0;
+            using var reader = new StreamReader(stream);
+            var data = await reader.ReadToEndAsync();
+            return (data, lastModified);
+        }
+
+        private static async Task UpdateCache(BlobClient blobClient, string data, DateTimeOffset expiresOn)
+        {
+            var bytes = Encoding.UTF8.GetBytes(data);
+            using var stream = new MemoryStream(bytes);
+            await blobClient.UploadAsync(stream, overwrite: true);
+            var metadata = new Dictionary<string, string> { { "ExpiresOn", expiresOn.ToString("o") } };
+            await blobClient.SetMetadataAsync(metadata);
+            var httpHeaders = new BlobHttpHeaders
+            {
+                ContentType = "text/plain",
+                CacheControl = $"public, max-age={(int)(expiresOn - GetNow()).TotalSeconds}"
+            };
+            await blobClient.SetHttpHeadersAsync(httpHeaders);
         }
 
         private static DateTimeOffset GetCacheExpiry(JsonNode currentRound)
         {
+            var now = GetNow();
+
             if (currentRound is JsonObject roundObject && roundObject["matches"] is JsonArray matches)
             {
-                // Check if any match in the current round is "playing"
+                // Use the short cache if any match in the current round is live
                 if (matches.Any(match => match?["status"]?.ToString() == "playing"))
                 {
-                    // Use the short cache if any match is "playing"
-                    return GetNow().AddMinutes(MIN_CACHE_LIFETIME_SECONDS);
+                    return GetNow().AddSeconds(MIN_CACHE_LIFETIME_SECONDS);
                 }
                 else
                 {
@@ -588,14 +679,19 @@ namespace FootyScores
 
                     if (nextScheduledMatch != null)
                     {
-                        // Cache until the nearly the start time of the next scheduled match
+                        // Cache until the start time of the next scheduled matchid
                         return DateTimeOffset.Parse(nextScheduledMatch["date"]!.ToString());
+                    } 
+                    else
+                    {
+                        // Cache until midnight if no scheduled matches remain
+                        return GetMidnight();
                     }
                 }
-            }
+            } 
 
-            // If there is no scheduled match left or no matches at all, cache until the end of the day
-            return GetMidnight();
+            // if there's no round it's the first load, don't cache
+            return now;
         }
 
         private static DateTimeOffset GetMidnight()
@@ -609,8 +705,7 @@ namespace FootyScores
 
         private static DateTimeOffset GetNow()
         {
-            var now = TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.UtcNow.DateTime, _timeZoneInfo);
-            return new DateTimeOffset(now, _timeZoneInfo.GetUtcOffset(now));
+            return _now;
         }
 
     }

@@ -6,23 +6,6 @@
         "isEnabled": true,
         "excludedTypes": "Request"
       }
-    },
-    "logLevel": {
-      "default": "Information",
-      "Host.Results": "Error",
-      "Function": "Error",
-      "Host.Aggregator": "Information"
     }
-  },
-  "cors": {
-    "allowedOrigins": [
-      "*"
-    ]
-  },
-  "functions": [
-    {
-      "name": "PlayerScores",
-      "authLevel": "anonymous"
-    }
-  ]
+  }
 }
