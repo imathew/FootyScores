@@ -13,11 +13,6 @@ namespace FootyScores
 {
     public partial class PlayerScores
     {
-        private static readonly int PLAYER_PREVIEW_COUNT = 5;         // how many of the top players to show for upcoming matches
-        private static readonly int PLAYER_NAME_LENGTH_SQUISH = 20;   // squash the font of longer names to reduce table size
-        private static readonly int MIN_CACHE_LIFETIME_SECONDS = 30;  // cache any API calls for at least this long
-        private static readonly int ROUND_CHANGE_DAYS = 2;            // How many days from the next round do we switch to it?
-
         // our custom scoring
         private static readonly Dictionary<string, int> SCORING = new()
         {
@@ -92,6 +87,10 @@ namespace FootyScores
         private static readonly string _apiPlayersUrl;
         private static readonly string _outputCacheFilename;
         private static readonly string _playersCacheFilename;
+        private static readonly int _playerPreviewCount;
+        private static readonly int _playerNameLengthSquish;
+        private static readonly int _minCacheLifetimeSeconds;
+        private static readonly int _roundChangeDays;
 
         static PlayerScores()
         {
@@ -108,12 +107,18 @@ namespace FootyScores
             _outputCacheFilename = config["OUTPUT_CACHE_FILENAME"]!;
             _playersCacheFilename = config["PLAYERS_CACHE_FILENAME"]!;
 
+            _playerPreviewCount = config.GetInt("PLAYER_PREVIEW_COUNT", 5);             // how many of the top players to show for upcoming matches
+            _playerNameLengthSquish = config.GetInt("PLAYER_NAME_LENGTH_SQUISH", 20);   // squash the font of longer names to reduce table size
+            _minCacheLifetimeSeconds = config.GetInt("MIN_CACHE_LIFETIME_SECONDS", 30); // cache any API calls for at least this long
+            _roundChangeDays = config.GetInt("ROUND_CHANGE_DAYS", 2);                   // How many days from the next round do we switch to it?
+
             _headers = new Dictionary<string, string>
             {
                 { "Content-Type", "text/plain; charset=utf-8" },
                 { "Access-Control-Allow-Origin", _allowedOrigin },
                 { "Access-Control-Allow-Methods", "GET, POST, OPTIONS" },
-                { "Access-Control-Allow-Headers", "Content-Type" }
+                { "Access-Control-Allow-Headers", "Content-Type" },
+                { "X-Robots-Tag", "noindex, nofollow"}
             };
         }
 
@@ -250,7 +255,7 @@ namespace FootyScores
             {
                 var now = GetNow();
                 var today = now.Date;
-                var roundChange = today.AddDays(ROUND_CHANGE_DAYS);
+                var roundChange = today.AddDays(_roundChangeDays);
 
                 var currentRound = roundsData
                     .Select(roundData =>
@@ -293,15 +298,13 @@ namespace FootyScores
             if (string.IsNullOrEmpty(data))
                 return string.Empty;
 
-            using (var outputStream = new MemoryStream())
+            using var outputStream = new MemoryStream();
+            using (var gZipStream = new GZipStream(outputStream, CompressionMode.Compress))
+            using (var writer = new StreamWriter(gZipStream))
             {
-                using (var gZipStream = new GZipStream(outputStream, CompressionMode.Compress))
-                using (var writer = new StreamWriter(gZipStream))
-                {
-                    writer.Write(data);
-                }
-                return Convert.ToBase64String(outputStream.ToArray());
+                writer.Write(data);
             }
+            return Convert.ToBase64String(outputStream.ToArray());
         }
 
         private static string DecompressData(string compressedData)
@@ -310,12 +313,10 @@ namespace FootyScores
                 return string.Empty;
 
             var gZipBuffer = Convert.FromBase64String(compressedData);
-            using (var inputStream = new MemoryStream(gZipBuffer))
-            using (var gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
-            using (var reader = new StreamReader(gZipStream))
-            {
-                return reader.ReadToEnd();
-            }
+            using var inputStream = new MemoryStream(gZipBuffer);
+            using var gZipStream = new GZipStream(inputStream, CompressionMode.Decompress);
+            using var reader = new StreamReader(gZipStream);
+            return reader.ReadToEnd();
         }
 
         private static async Task<JsonObject?> GetPlayerStatsAsync(JsonNode currentRound)
@@ -344,7 +345,7 @@ namespace FootyScores
             var htmlBuilder = new StringBuilder();
 
             //just show a subset if the match hasn't started
-            int subset = matchStatus == "scheduled" ? PLAYER_PREVIEW_COUNT : int.MaxValue;
+            int subset = matchStatus == "scheduled" ? _playerPreviewCount : int.MaxValue;
 
             var sortedPlayers = players
                 .OrderByDescending(p =>
@@ -386,7 +387,7 @@ namespace FootyScores
             var teamShort = squad?["short_name"]?.GetValue<string>() ?? "UNK";
 
             var playerName = $"{player["first_name"]} {player["last_name"]}";
-            var playerClass = playerName.Length >= PLAYER_NAME_LENGTH_SQUISH ? "playername long" : "playername";
+            var playerClass = playerName.Length >= _playerNameLengthSquish ? "playername long" : "playername";
             var playerRank = $"Season rank: {player["stats"]?["season_rank"]?.GetValue<int>() ?? 0}";
             var playerAge = GetAgeString(player["dob"]?.ToString() ?? String.Empty);
 
@@ -610,16 +611,17 @@ namespace FootyScores
         private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync)
         {
             var blobClient = _containerClient.GetBlobClient(blobName);
+            var cacheExpiry = getCacheExpiry();
 
-            if (await IsCacheValid(blobClient))
+            if (cacheExpiry > GetNow() && await IsCacheValid(blobClient))
             {
                 return await GetCachedData(blobClient);
             }
 
             string? fetchedData = await fetchDataAsync();
-            if (fetchedData != null)
+            if (fetchedData != null && cacheExpiry > GetNow())
             {
-                await UpdateCache(blobClient, fetchedData, getCacheExpiry());
+                await UpdateCache(blobClient, fetchedData, cacheExpiry);
             }
 
             return (fetchedData, GetNow());
@@ -679,7 +681,7 @@ namespace FootyScores
                 // use the short cache if any match in the current round is live
                 if (matches.Any(match => match?["status"]?.ToString() == "playing"))
                 {
-                    return GetNow().AddSeconds(MIN_CACHE_LIFETIME_SECONDS);
+                    return GetNow().AddSeconds(_minCacheLifetimeSeconds);
                 }
                 else
                 {
@@ -718,5 +720,13 @@ namespace FootyScores
             return _now;
         }
 
+    }
+
+    public static class ConfigurationExtensions
+    {
+        public static int GetInt(this IConfigurationRoot config, string key, int defaultValue)
+        {
+            return int.TryParse(config[key], out int result) ? result : defaultValue;
+        }
     }
 }
