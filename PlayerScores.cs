@@ -695,34 +695,35 @@ namespace FootyScores
         private static DateTimeOffset GetCacheExpiry(JsonNode currentRound)
         {
             var now = GetNow();
+            var midnight = GetMidnight();
+            var cacheExpiry = now; // if there's no round it's probabably the first load, so don't cache
 
             if (currentRound is JsonObject roundObject && roundObject["matches"] is JsonArray matches)
             {
                 // use the short cache if any match in the current round is live
                 if (matches.Any(match => match?["status"]?.ToString() == "playing"))
                 {
-                    return GetNow().AddSeconds(_minCacheLifetimeSeconds);
+                    cacheExpiry = now.AddSeconds(_minCacheLifetimeSeconds);
                 }
                 else
                 {
                     // find the next scheduled match in the round
                     var nextScheduledMatch = matches.FirstOrDefault(match => match?["status"]?.ToString() == "scheduled");
-
                     if (nextScheduledMatch != null)
                     {
-                        // cache until the start time of the next scheduled matchid
-                        return DateTimeOffset.Parse(nextScheduledMatch["date"]!.ToString());
-                    } 
+                        // cache until the start time of the next scheduled match
+                        cacheExpiry = DateTimeOffset.Parse(nextScheduledMatch["date"]!.ToString());
+                    }
                     else
                     {
                         // cache until midnight if no scheduled matches remain
-                        return GetMidnight();
+                        cacheExpiry = midnight;
                     }
                 }
-            } 
+            }
 
-            // if there's no round it's the first load, don't cache
-            return now;
+            // return the earliest option (latest cache is midnight)
+            return cacheExpiry < midnight ? cacheExpiry : midnight;
         }
 
         private static DateTimeOffset GetMidnight()
