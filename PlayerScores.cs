@@ -91,6 +91,7 @@ namespace FootyScores
         private static readonly int _playerNameLengthSquish;
         private static readonly int _minCacheLifetimeSeconds;
         private static readonly int _roundChangeDays;
+        private static int? _cachedCurrentRoundId;
 
         static PlayerScores()
         {
@@ -264,31 +265,43 @@ namespace FootyScores
             {
                 if (roundNumber.HasValue)
                 {
-                    // return the Round with the specified roundNumber
+                    // return the round with the specified roundNumber
                     return roundsData.FirstOrDefault(roundData => roundData?["id"]?.GetValue<int>() == roundNumber.Value);
                 }
                 else
                 {
-                    // otherwise get the current round based on our criteria
-                    var now = GetNow();
-                    var today = now.Date;
-                    var roundChange = today.AddDays(_roundChangeDays);
+                    // check if the memorycached round id is available
+                    if (_cachedCurrentRoundId.HasValue)
+                    {
+                        // return the round with the cached round id
+                        return roundsData.FirstOrDefault(roundData => roundData?["id"]?.GetValue<int>() == _cachedCurrentRoundId.Value);
+                    }
+                    else
+                    {
+                        // otherwise determine the current round based on our criteria
+                        var now = GetNow();
+                        var today = now.Date;
+                        var roundChange = today.AddDays(_roundChangeDays);
 
-                    var currentRound = roundsData
-                        .Select(roundData =>
-                        {
-                            var start = DateTimeOffset.Parse(roundData!["start"]!.GetValue<string>());
-                            var end = DateTimeOffset.Parse(roundData!["end"]!.GetValue<string>());
-                            return new { Round = roundData, Start = start, End = end };
-                        })
-                        .OrderByDescending(roundInfo => roundInfo.Start)
-                        .FirstOrDefault(roundInfo =>
-                        {
-                            var startDate = roundInfo.Start.Date;
-                            return startDate <= today || (startDate >= today && startDate <= roundChange);
-                        });
+                        var currentRound = roundsData
+                            .Select(roundData =>
+                            {
+                                var start = DateTimeOffset.Parse(roundData!["start"]!.GetValue<string>());
+                                var end = DateTimeOffset.Parse(roundData!["end"]!.GetValue<string>());
+                                return new { Round = roundData, Start = start, End = end };
+                            })
+                            .OrderByDescending(roundInfo => roundInfo.Start)
+                            .FirstOrDefault(roundInfo =>
+                            {
+                                var startDate = roundInfo.Start.Date;
+                                return startDate <= today || (startDate >= today && startDate <= roundChange);
+                            });
 
-                    return currentRound?.Round;
+                        // cache the current round id in memory (will only last the life of the process)
+                        _cachedCurrentRoundId = currentRound?.Round["id"]?.GetValue<int>();
+
+                        return currentRound?.Round;
+                    }
                 }
             }
 
