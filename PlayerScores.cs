@@ -127,11 +127,18 @@ namespace FootyScores
         {
             // get the current time to use for the rest of this call
             _now = new DateTimeOffset(TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.UtcNow.DateTime, _timeZoneInfo), _timeZoneInfo.GetUtcOffset(DateTimeOffset.UtcNow));
-            
+
             // ensure the storage container is present
             _containerClient.CreateIfNotExistsAsync().Wait();
 
-            var currentRound = await GetCurrentRoundAsync();
+            // check if the "round" parameter is present in the query string
+            var roundValue = req.Query.Get("round");
+            var roundNumber = !string.IsNullOrEmpty(roundValue) && int.TryParse(roundValue, out var r) ? r : (int?)null;
+
+            var freshValue = req.Query.Get("fresh");
+            var fresh = !string.IsNullOrEmpty(freshValue) && freshValue == "1";
+
+            var currentRound = await GetCurrentRoundAsync(roundNumber);
 
             if (currentRound != null)
             {
@@ -146,7 +153,7 @@ namespace FootyScores
                     using (var gzipStream = new GZipStream(outputStream, CompressionMode.Compress))
                     {
                         // generate the HTML output
-                        string htmlOutput = await GenerateHtmlOutputAsync(currentRound);
+                        string htmlOutput = await GenerateHtmlOutputAsync(currentRound, fresh);
                         var bytes = Encoding.UTF8.GetBytes(htmlOutput);
                         await gzipStream.WriteAsync(bytes);
                     }
@@ -169,24 +176,25 @@ namespace FootyScores
             return errorResponse;
         }
 
-        private static async Task<string> GenerateHtmlOutputAsync(JsonNode closestRound)
+        private static async Task<string> GenerateHtmlOutputAsync(JsonNode closestRound, bool fresh = false)
         {
             var htmlBuilder = new StringBuilder();
             DateTimeOffset lastModified = GetNow();
+            var roundStr = closestRound["id"];
 
             // get and/or save to the cache, as appropriate
-            (string? cachedHtml, DateTimeOffset cachedLastModified) = await GetCachedDataAsync($"{_outputCacheFilename}",
+            (string? cachedHtml, DateTimeOffset cachedLastModified) = await GetCachedDataAsync($"{roundStr}_{_outputCacheFilename}",
                 () => GetCacheExpiry(closestRound),
                 async () =>
                 {
                     htmlBuilder.Append($@"
-<h1 title='Updated: {lastModified:MMMM d, h:mmtt}' class='refresh-button'>The Masters &ndash; Round {closestRound["id"]}</h1>
+<h1 title='Updated: {lastModified:MMMM d, h:mmtt}' class='refresh-button'>The Masters &ndash; Round {roundStr}</h1>
 <table>
 ");
 
                     if (closestRound["matches"] is JsonArray matches)
                     {
-                        var (players, _) = await GetPlayerDataAsync();
+                        var (players, _) = await GetPlayerDataAsync(fresh);
                         var statsData = await GetPlayerStatsAsync(closestRound);
                         var scores = statsData?["playerScores"] as JsonObject;
 
@@ -197,7 +205,8 @@ namespace FootyScores
 
                     // cache the data compressed
                     return CompressData(htmlBuilder.ToString());
-                });
+                }
+                , fresh);
 
             if (cachedHtml == null)
             {
@@ -249,42 +258,53 @@ namespace FootyScores
             return htmlBuilder.ToString();
         }
 
-        private static async Task<JsonNode?> GetCurrentRoundAsync()
+        private static async Task<JsonNode?> GetCurrentRoundAsync(int? roundNumber = null)
         {
             if (await MakeRequestAsync($"{_apiBaseUrl}/{_apiRoundsUrl}") is JsonArray roundsData)
             {
-                var now = GetNow();
-                var today = now.Date;
-                var roundChange = today.AddDays(_roundChangeDays);
+                if (roundNumber.HasValue)
+                {
+                    // return the Round with the specified roundNumber
+                    return roundsData.FirstOrDefault(roundData => roundData?["id"]?.GetValue<int>() == roundNumber.Value);
+                }
+                else
+                {
+                    // otherwise get the current round based on our criteria
+                    var now = GetNow();
+                    var today = now.Date;
+                    var roundChange = today.AddDays(_roundChangeDays);
 
-                var currentRound = roundsData
-                    .Select(roundData =>
-                    {
-                        var start = DateTimeOffset.Parse(roundData!["start"]!.GetValue<string>());
-                        var end = DateTimeOffset.Parse(roundData!["end"]!.GetValue<string>());
-                        return new { Round = roundData, Start = start, End = end };
-                    })
-                    .OrderByDescending(roundInfo => roundInfo.Start)
-                    .FirstOrDefault(roundInfo =>
-                    {
-                        var startDate = roundInfo.Start.Date;
-                        return startDate <= today || (startDate >= today && startDate <= roundChange);
-                    });
+                    var currentRound = roundsData
+                        .Select(roundData =>
+                        {
+                            var start = DateTimeOffset.Parse(roundData!["start"]!.GetValue<string>());
+                            var end = DateTimeOffset.Parse(roundData!["end"]!.GetValue<string>());
+                            return new { Round = roundData, Start = start, End = end };
+                        })
+                        .OrderByDescending(roundInfo => roundInfo.Start)
+                        .FirstOrDefault(roundInfo =>
+                        {
+                            var startDate = roundInfo.Start.Date;
+                            return startDate <= today || (startDate >= today && startDate <= roundChange);
+                        });
 
-                return currentRound?.Round;
+                    return currentRound?.Round;
+                }
             }
 
             return null;
         }
 
-        private static async Task<(JsonArray? data, DateTimeOffset lastModified)> GetPlayerDataAsync()
+        private static async Task<(JsonArray? data, DateTimeOffset lastModified)> GetPlayerDataAsync(bool fresh = false)
         {
             // get and/or save to the cache, as appropriate
             (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync($"{_playersCacheFilename}", GetMidnight,
                 async () => {
                     var jsonData = await MakeRequestAsync($"{_apiBaseUrl}/{_apiPlayersUrl}");
                     return CompressData(jsonData?.ToJsonString()); // cache the compressed data
-                });
+                }
+                , fresh);
+
             if (cachedData != null)
             {
                 var decompressedData = DecompressData(cachedData); // return decompressed data
@@ -608,12 +628,12 @@ namespace FootyScores
             private static partial Regex MatchStatus();
         }
 
-        private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync)
+        private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync, bool fresh = false)
         {
             var blobClient = _containerClient.GetBlobClient(blobName);
             var cacheExpiry = getCacheExpiry();
 
-            if (cacheExpiry > GetNow() && await IsCacheValid(blobClient))
+            if (!fresh && cacheExpiry > GetNow() && await IsCacheValid(blobClient))
             {
                 return await GetCachedData(blobClient);
             }
