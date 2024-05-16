@@ -528,7 +528,20 @@ namespace FootyScores
             }
 
             var matchDate = DateTimeOffset.Parse(match["date"]!.ToString());
-            var matchDateStr = matchDate.ToString("MMMM d, h:mmtt");
+            var matchDay = matchDate.DayOfWeek;
+
+            // Check if matchDay is the next instance of that day of the week
+            var nextInstanceOfMatchDay = DateTime.Today.AddDays(((int)matchDay - (int)DateTime.Today.DayOfWeek + 7) % 7);
+
+            string matchDateStr;
+            if (matchDate.Date == nextInstanceOfMatchDay)
+            {
+                matchDateStr = $"{matchDay.ToString()[..3]} {matchDate:h:mmtt}";
+            }
+            else
+            {
+                matchDateStr = $"{matchDay.ToString()[..3]} {matchDate:d MMM h:mmtt}";
+            }
 
             // convert match time to local time
             var localDate = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(matchDate, timezoneStr);
