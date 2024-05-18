@@ -177,15 +177,15 @@ namespace FootyScores
             return errorResponse;
         }
 
-        private static async Task<string> GenerateHtmlOutputAsync(JsonNode closestRound, bool fresh = false)
+        private static async Task<string> GenerateHtmlOutputAsync(JsonNode currentRound, bool fresh = false)
         {
             var htmlBuilder = new StringBuilder();
             DateTimeOffset lastModified = GetNow();
-            var roundStr = closestRound["id"];
+            var roundStr = currentRound["id"];
 
             // get and/or save to the cache, as appropriate
             (string? cachedHtml, DateTimeOffset cachedLastModified) = await GetCachedDataAsync($"{roundStr}_{_outputCacheFilename}",
-                () => GetCacheExpiry(closestRound),
+                () => GetCacheExpiry(currentRound),
                 async () =>
                 {
                     htmlBuilder.Append($@"
@@ -193,10 +193,10 @@ namespace FootyScores
 <table>
 ");
 
-                    if (closestRound["matches"] is JsonArray matches)
+                    if (currentRound["matches"] is JsonArray matches)
                     {
-                        var (players, _) = await GetPlayerDataAsync(fresh);
-                        var statsData = await GetPlayerStatsAsync(closestRound);
+                        var (players, _) = await GetPlayerDataAsync(currentRound, fresh);
+                        var statsData = await GetPlayerStatsAsync(currentRound);
                         var scores = statsData?["playerScores"] as JsonObject;
 
                         htmlBuilder.Append(GenerateMatchHtml(matches, players!, scores!, _squads!, _venues!, statsData));
@@ -308,10 +308,11 @@ namespace FootyScores
             return null;
         }
 
-        private static async Task<(JsonArray? data, DateTimeOffset lastModified)> GetPlayerDataAsync(bool fresh = false)
+        private static async Task<(JsonArray? data, DateTimeOffset lastModified)> GetPlayerDataAsync(JsonNode currentRound, bool fresh = false)
         {
             // get and/or save to the cache, as appropriate
-            (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync($"{_playersCacheFilename}", GetMidnight,
+            (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync($"{_playersCacheFilename}",
+                () => GetCacheExpiry(currentRound, false),
                 async () => {
                     var jsonData = await MakeRequestAsync($"{_apiBaseUrl}/{_apiPlayersUrl}");
                     return CompressData(jsonData?.ToJsonString()); // cache the compressed data
@@ -718,7 +719,7 @@ namespace FootyScores
             await blobClient.SetHttpHeadersAsync(httpHeaders);
         }
 
-        private static DateTimeOffset GetCacheExpiry(JsonNode currentRound)
+        private static DateTimeOffset GetCacheExpiry(JsonNode currentRound, bool useShortCache = true)
         {
             var now = GetNow();
             var midnight = GetMidnight();
@@ -727,7 +728,7 @@ namespace FootyScores
             if (currentRound is JsonObject roundObject && roundObject["matches"] is JsonArray matches)
             {
                 // use the short cache if any match in the current round is live
-                if (matches.Any(match => match?["status"]?.ToString() == "playing"))
+                if (useShortCache && matches.Any(match => match?["status"]?.ToString() == "playing"))
                 {
                     cacheExpiry = now.AddSeconds(_minCacheLifetimeSeconds);
                 }
