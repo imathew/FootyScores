@@ -109,10 +109,10 @@ namespace FootyScores
             _outputCacheFilename = config["OUTPUT_CACHE_FILENAME"]!;
             _playersCacheFilename = config["PLAYERS_CACHE_FILENAME"]!;
 
-            _playerPreviewCount = config.GetInt("PLAYER_PREVIEW_COUNT", 5);             // how many of the top players to show for upcoming matches
+            _playerPreviewCount = config.GetInt("PLAYER_PREVIEW_COUNT", 0);             // the minimum top players to show for upcoming matches (will always show at least one from each team)
             _playerNameLengthSquish = config.GetInt("PLAYER_NAME_LENGTH_SQUISH", 20);   // squash the font of longer names to reduce table size
             _minCacheLifetimeSeconds = config.GetInt("MIN_CACHE_LIFETIME_SECONDS", 30); // cache any API calls for at least this long
-            _roundChangeDays = config.GetInt("ROUND_CHANGE_DAYS", 2);                   // How many days from the next round do we switch to it?
+            _roundChangeDays = config.GetInt("ROUND_CHANGE_DAYS", 2);                   // how many days from the next round do we switch to it?
 
             _headers = new Dictionary<string, string>
             {
@@ -378,11 +378,6 @@ namespace FootyScores
 
         private static string GetPlayersHtml(IEnumerable<JsonNode> players, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus)
         {
-            var htmlBuilder = new StringBuilder();
-
-            //just show a subset if the match hasn't started
-            int subset = matchStatus == "scheduled" ? _playerPreviewCount : int.MaxValue;
-
             var sortedPlayers = players
                 .OrderByDescending(p =>
                 {
@@ -393,20 +388,29 @@ namespace FootyScores
                 {
                     var seasonRank = p["stats"]?["season_rank"]?.GetValue<int>();
                     return seasonRank == 0 ? int.MaxValue : seasonRank ?? int.MaxValue;
-                })
-                .Take(subset);
+                });
 
-            int gameRank = 1;
+            var htmlBuilder = new StringBuilder();
+            var representedTeams = new HashSet<int>();
+            int gameRank = 0;
+
             foreach (var player in sortedPlayers)
             {
-                var playerHtml = GetPlayerHtml(player, scores, squads, statsData, matchStatus, gameRank);
-
+                int playerSquadId = player["squad_id"]!.GetValue<int>();
+                var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == playerSquadId);
+                var playerHtml = GetPlayerHtml(player, scores, squad, statsData, matchStatus, gameRank);
                 if (!string.IsNullOrEmpty(playerHtml))
                 {
                     htmlBuilder.AppendLine(playerHtml);
+                    representedTeams.Add(playerSquadId);
                 }
-
                 gameRank++;
+
+                // if the match is only scheduled, only keep showing players until both teams are represented
+                if (matchStatus == "scheduled" && gameRank >= _playerPreviewCount && representedTeams.Count >= 2)
+                {
+                    break;
+                }
             }
 
             // return a "pending" notice if there's no data at this point, as it's probably near the start of a live match
@@ -416,9 +420,9 @@ namespace FootyScores
                 : ret;
         }
 
-        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus, int gameRank)
+        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonNode? squad, JsonObject? statsData, string matchStatus, int gameRank)
         {
-            var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == player["squad_id"]!.GetValue<int>());
+            //var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == player["squad_id"]!.GetValue<int>());
             var team = squad?["name"]?.GetValue<string>() ?? "Unknown";
             var teamShort = squad?["short_name"]?.GetValue<string>() ?? "UNK";
 
@@ -450,7 +454,7 @@ namespace FootyScores
                     statCells.Append($"<td title='{stat.Value * statValue}' class='stat'>{statValue}</td>");
                 }
 
-                return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td title='Game rank: {gameRank}' class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
+                return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td title='Game rank: {gameRank+1}' class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
             }
             else if (matchStatus == "scheduled")
             {
@@ -630,9 +634,17 @@ namespace FootyScores
                 string? statusX = x?["status"]?.ToString();
                 string? statusY = y?["status"]?.ToString();
 
-                int statusCompare = CompareStatus(statusX, statusY);
-                if (statusCompare != 0)
-                    return statusCompare;
+                bool isPlayingX = string.Equals(statusX, "playing", StringComparison.OrdinalIgnoreCase);
+                bool isPlayingY = string.Equals(statusY, "playing", StringComparison.OrdinalIgnoreCase);
+
+                bool isScheduledX = string.Equals(statusX, "scheduled", StringComparison.OrdinalIgnoreCase);
+                bool isScheduledY = string.Equals(statusY, "scheduled", StringComparison.OrdinalIgnoreCase);
+
+                if (isPlayingX != isPlayingY)
+                    return isPlayingX ? -1 : 1;
+
+                if (isScheduledX != isScheduledY)
+                    return isScheduledX ? -1 : 1;
 
                 DateTime dateX = x?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
                 DateTime dateY = y?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
@@ -643,22 +655,10 @@ namespace FootyScores
                 if (isTodayX != isTodayY)
                     return isTodayX ? -1 : 1;
 
+                if (!isPlayingX && !isScheduledX && !isPlayingY && !isScheduledY)
+                    return DateTime.Compare(dateY, dateX); // reverse order for completed games
+
                 return DateTime.Compare(dateX, dateY);
-            }
-
-            private static int CompareStatus(string? statusX, string? statusY)
-            {
-                bool isPlayingX = string.Equals(statusX, "playing", StringComparison.OrdinalIgnoreCase);
-                bool isPlayingY = string.Equals(statusY, "playing", StringComparison.OrdinalIgnoreCase);
-                if (isPlayingX != isPlayingY)
-                    return isPlayingX ? -1 : 1;
-
-                bool isScheduledX = string.Equals(statusX, "scheduled", StringComparison.OrdinalIgnoreCase);
-                bool isScheduledY = string.Equals(statusY, "scheduled", StringComparison.OrdinalIgnoreCase);
-                if (isScheduledX != isScheduledY)
-                    return isScheduledX ? -1 : 1;
-
-                return 0;
             }
         }
 
