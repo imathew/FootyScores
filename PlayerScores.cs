@@ -75,11 +75,12 @@ namespace FootyScores
         private static readonly JsonArray? _squads = JsonNode.Parse(SQUADS)?.AsArray();
         private static readonly JsonArray? _venues = JsonNode.Parse(VENUES)?.AsArray();
         private static readonly HttpClient _httpClient = new();
-        private static readonly BlobServiceClient _blobServiceClient = new(Environment.GetEnvironmentVariable("AZURE_STORAGE_CONNECTION_STRING"));
-        private static readonly TimeZoneInfo _timeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById("Australia/Melbourne");
-        private static readonly BlobContainerClient _containerClient = _blobServiceClient.GetBlobContainerClient("playerscores-cache");
         private static readonly Dictionary<string, string> _headers;
+        private static readonly BlobServiceClient _blobServiceClient = new(Environment.GetEnvironmentVariable("AZURE_STORAGE_CONNECTION_STRING"));
+        private static readonly BlobContainerClient _containerClient = _blobServiceClient.GetBlobContainerClient("playerscores-cache");
+        private static readonly TimeZoneInfo _timeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById("Australia/Melbourne");
         private static DateTimeOffset _now;
+        private static DateTime _nowDate;
 
         private static readonly string _allowedOrigin;
         private static readonly string _apiBaseUrl;
@@ -128,6 +129,7 @@ namespace FootyScores
         {
             // get the current time to use for the rest of this call
             _now = new DateTimeOffset(TimeZoneInfo.ConvertTimeFromUtc(DateTimeOffset.UtcNow.DateTime, _timeZoneInfo), _timeZoneInfo.GetUtcOffset(DateTimeOffset.UtcNow));
+            _nowDate = _now.DateTime.Date;
 
             // ensure the storage container is present
             _containerClient.CreateIfNotExistsAsync().Wait();
@@ -627,6 +629,17 @@ namespace FootyScores
 
             public int Compare(JsonNode? x, JsonNode? y)
             {
+                var dateStringX = x?["date"]?.ToString();
+                var dateStringY = y?["date"]?.ToString();
+
+                bool isTodayX = IsToday(dateStringX);
+                bool isTodayY = IsToday(dateStringY);
+
+                if (isTodayX != isTodayY)
+                {
+                    return isTodayX ? -1 : 1;
+                }
+
                 var statusX = x?["status"]?.ToString();
                 var statusY = y?["status"]?.ToString();
 
@@ -638,17 +651,23 @@ namespace FootyScores
                     return isPlayingOrCompleteX ? -1 : 1;
                 }
 
-                var dateX = x?["date"]?.ToString();
-                var dateY = y?["date"]?.ToString();
-
-                if (dateX != null && dateY != null)
+                if (dateStringX != null && dateStringY != null &&
+                    DateTime.TryParse(dateStringX, out DateTime dateX) &&
+                    DateTime.TryParse(dateStringY, out DateTime dateY))
                 {
                     return isPlayingOrCompleteX
-                        ? DateTimeOffset.Parse(dateY).CompareTo(DateTimeOffset.Parse(dateX))
-                        : DateTimeOffset.Parse(dateX).CompareTo(DateTimeOffset.Parse(dateY));
+                        ? dateY.CompareTo(dateX)
+                        : dateX.CompareTo(dateY);
                 }
 
                 return 0;
+            }
+
+            private static bool IsToday(string? dateString)
+            {
+                return dateString != null &&
+                       DateTime.TryParse(dateString, out DateTime date) &&
+                       date.Date == _nowDate;
             }
 
             [GeneratedRegex("^(playing|complete)$", RegexOptions.Compiled)]
