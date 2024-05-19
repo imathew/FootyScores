@@ -7,7 +7,6 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 
 namespace FootyScores
 {
@@ -96,10 +95,9 @@ namespace FootyScores
 
         static PlayerScores()
         {
-            // dev settings
             var config = new ConfigurationBuilder()
-                .AddJsonFile("local.settings.json", optional: true, reloadOnChange: true)
                 .AddEnvironmentVariables()
+                .AddJsonFile("local.settings.json", optional: true, reloadOnChange: true)
                 .Build();
 
             _allowedOrigin = config["AllowedOrigin"]!;
@@ -781,7 +779,19 @@ namespace FootyScores
     {
         public static int GetInt(this IConfigurationRoot config, string key, int defaultValue)
         {
-            return int.TryParse(config[key], out int result) ? result : defaultValue;
+            string? value = Environment.GetEnvironmentVariable(key);
+            if (int.TryParse(value, out int result))
+            {
+                return result;
+            }
+            else if (int.TryParse(config[key], out result))
+            {
+                return result;
+            }
+            else
+            {
+                return defaultValue;
+            }
         }
     }
 
@@ -789,7 +799,7 @@ namespace FootyScores
     {
         public static DateTime? ToDateTime(this string? str)
         {
-            return DateTime.TryParse(str, out DateTime date) ? date : (DateTime?)null;
+            return DateTime.TryParse(str, out DateTime date) ? date : null;
         }
     }
 }
