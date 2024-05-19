@@ -623,55 +623,43 @@ namespace FootyScores
             }
         }
 
-        private partial class MatchComparer : IComparer<JsonNode?>
+        private class MatchComparer : IComparer<JsonNode?>
         {
-            private static readonly Regex playingOrCompleteRegex = MatchStatus();
-
             public int Compare(JsonNode? x, JsonNode? y)
             {
-                var dateStringX = x?["date"]?.ToString();
-                var dateStringY = y?["date"]?.ToString();
+                string? statusX = x?["status"]?.ToString();
+                string? statusY = y?["status"]?.ToString();
 
-                bool isTodayX = IsToday(dateStringX);
-                bool isTodayY = IsToday(dateStringY);
+                int statusCompare = CompareStatus(statusX, statusY);
+                if (statusCompare != 0)
+                    return statusCompare;
+
+                DateTime dateX = x?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
+                DateTime dateY = y?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
+
+                bool isTodayX = dateX.Date == _nowDate;
+                bool isTodayY = dateY.Date == _nowDate;
 
                 if (isTodayX != isTodayY)
-                {
                     return isTodayX ? -1 : 1;
-                }
 
-                var statusX = x?["status"]?.ToString();
-                var statusY = y?["status"]?.ToString();
+                return DateTime.Compare(dateX, dateY);
+            }
 
-                bool isPlayingOrCompleteX = playingOrCompleteRegex.IsMatch(statusX ?? "");
-                bool isPlayingOrCompleteY = playingOrCompleteRegex.IsMatch(statusY ?? "");
+            private static int CompareStatus(string? statusX, string? statusY)
+            {
+                bool isPlayingX = string.Equals(statusX, "playing", StringComparison.OrdinalIgnoreCase);
+                bool isPlayingY = string.Equals(statusY, "playing", StringComparison.OrdinalIgnoreCase);
+                if (isPlayingX != isPlayingY)
+                    return isPlayingX ? -1 : 1;
 
-                if (isPlayingOrCompleteX != isPlayingOrCompleteY)
-                {
-                    return isPlayingOrCompleteX ? -1 : 1;
-                }
-
-                if (dateStringX != null && dateStringY != null &&
-                    DateTime.TryParse(dateStringX, out DateTime dateX) &&
-                    DateTime.TryParse(dateStringY, out DateTime dateY))
-                {
-                    return isPlayingOrCompleteX
-                        ? dateY.CompareTo(dateX)
-                        : dateX.CompareTo(dateY);
-                }
+                bool isScheduledX = string.Equals(statusX, "scheduled", StringComparison.OrdinalIgnoreCase);
+                bool isScheduledY = string.Equals(statusY, "scheduled", StringComparison.OrdinalIgnoreCase);
+                if (isScheduledX != isScheduledY)
+                    return isScheduledX ? -1 : 1;
 
                 return 0;
             }
-
-            private static bool IsToday(string? dateString)
-            {
-                return dateString != null &&
-                       DateTime.TryParse(dateString, out DateTime date) &&
-                       date.Date == _nowDate;
-            }
-
-            [GeneratedRegex("^(playing|complete)$", RegexOptions.Compiled)]
-            private static partial Regex MatchStatus();
         }
 
         private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync, bool fresh = false)
@@ -794,6 +782,14 @@ namespace FootyScores
         public static int GetInt(this IConfigurationRoot config, string key, int defaultValue)
         {
             return int.TryParse(config[key], out int result) ? result : defaultValue;
+        }
+    }
+
+    public static class StringExtensions
+    {
+        public static DateTime? ToDateTime(this string? str)
+        {
+            return DateTime.TryParse(str, out DateTime date) ? date : (DateTime?)null;
         }
     }
 }
