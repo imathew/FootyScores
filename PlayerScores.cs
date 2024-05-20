@@ -107,10 +107,10 @@ namespace FootyScores
             _outputCacheFilename = config["OUTPUT_CACHE_FILENAME"]!;
             _playersCacheFilename = config["PLAYERS_CACHE_FILENAME"]!;
 
-            _playerPreviewCount = config.GetInt("PLAYER_PREVIEW_COUNT", 0);             // the minimum top players to show for upcoming matches (will always show at least one from each team)
-            _playerNameLengthSquish = config.GetInt("PLAYER_NAME_LENGTH_SQUISH", 20);   // squash the font of longer names to reduce table size
-            _minCacheLifetimeSeconds = config.GetInt("MIN_CACHE_LIFETIME_SECONDS", 30); // cache any API calls for at least this long
-            _roundChangeDays = config.GetInt("ROUND_CHANGE_DAYS", 2);                   // how many days from the next round do we switch to it?
+            _playerPreviewCount = int.TryParse(config["PLAYER_PREVIEW_COUNT"], out int playerPreviewCount) ? playerPreviewCount : 0;                        // the minimum top players to show for upcoming matches (but will always show at least one from each team)
+            _playerNameLengthSquish = int.TryParse(config["PLAYER_NAME_LENGTH_SQUISH"], out int playerNameLengthSquish) ? playerNameLengthSquish : 20;      // squash the font of longer names to reduce table size
+            _minCacheLifetimeSeconds = int.TryParse(config["MIN_CACHE_LIFETIME_SECONDS"], out int minCacheLifetimeSeconds) ? minCacheLifetimeSeconds : 30;  // cache any API calls for at least this long
+            _roundChangeDays = int.TryParse(config["ROUND_CHANGE_DAYS"], out int roundChangeDays) ? roundChangeDays : 2;                                    // how many days from the next round do we switch to it?
 
             _headers = new Dictionary<string, string>
             {
@@ -773,26 +773,6 @@ namespace FootyScores
             return _now;
         }
 
-    }
-
-    public static class ConfigurationExtensions
-    {
-        public static int GetInt(this IConfigurationRoot config, string key, int defaultValue)
-        {
-            string? value = Environment.GetEnvironmentVariable(key);
-            if (int.TryParse(value, out int result))
-            {
-                return result;
-            }
-            else if (int.TryParse(config[key], out result))
-            {
-                return result;
-            }
-            else
-            {
-                return defaultValue;
-            }
-        }
     }
 
     public static class StringExtensions
