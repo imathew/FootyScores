@@ -107,10 +107,10 @@ namespace FootyScores
             _outputCacheFilename = config["OUTPUT_CACHE_FILENAME"]!;
             _playersCacheFilename = config["PLAYERS_CACHE_FILENAME"]!;
 
-            _playerPreviewCount = int.Parse(config["PLAYER_PREVIEW_COUNT"]!);               // the minimum top players to show for upcoming matches (but will always show at least one from each team)
-            _playerNameLengthSquish = int.Parse(config["PLAYER_NAME_LENGTH_SQUISH"]!);      // squash the font of longer names to reduce table size
-            _minCacheLifetimeSeconds = int.Parse(config["MIN_CACHE_LIFETIME_SECONDS"]!);    // cache any API calls for at least this long
-            _roundChangeDays = int.Parse(config["ROUND_CHANGE_DAYS"]!);                     // how many days from the next round do we switch to it?
+            _playerPreviewCount = config.GetValue("PLAYER_PREVIEW_COUNT", 0);               // the minimum top players to show for upcoming matches (but will always show at least one from each team)
+            _playerNameLengthSquish = config.GetValue("PLAYER_NAME_LENGTH_SQUISH", 20);     // squash the font of longer names to reduce table size
+            _minCacheLifetimeSeconds = config.GetValue("MIN_CACHE_LIFETIME_SECONDS", 30);   // cache any API calls for at least this long
+            _roundChangeDays = config.GetValue("ROUND_CHANGE_DAYS", 2);                     // how many days from the next round do we switch to it?             
 
             _headers = new Dictionary<string, string>
             {
