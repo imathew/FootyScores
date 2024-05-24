@@ -638,15 +638,15 @@ namespace FootyScores
 				bool isTodayX = dateX.Date == _nowDate;
 				bool isTodayY = dateY.Date == _nowDate;
 		
-				bool isPlayingX = string.Equals(statusX, "playing", StringComparison.OrdinalIgnoreCase);
-				bool isPlayingY = string.Equals(statusY, "playing", StringComparison.OrdinalIgnoreCase);
+				bool isPlayingX = statusX is not null && statusX.Equals("playing", StringComparison.OrdinalIgnoreCase);
+				bool isPlayingY = statusY is not null && statusY.Equals("playing", StringComparison.OrdinalIgnoreCase);
 		
 				// 1. Playing games (sorted by reverse date)
 				if (isPlayingX || isPlayingY)
 					return isPlayingX == isPlayingY ? DateTime.Compare(dateY, dateX) : (isPlayingX ? -1 : 1);
 		
-				bool isScheduledX = string.Equals(statusX, "scheduled", StringComparison.OrdinalIgnoreCase);
-				bool isScheduledY = string.Equals(statusY, "scheduled", StringComparison.OrdinalIgnoreCase);
+				bool isScheduledX = statusX is not null && statusX.Equals("scheduled", StringComparison.OrdinalIgnoreCase);
+				bool isScheduledY = statusY is not null && statusY.Equals("scheduled", StringComparison.OrdinalIgnoreCase);
 		
 				// 2. Today's scheduled games (sorted by date)
 				if (isTodayX && isScheduledX || isTodayY && isScheduledY)
