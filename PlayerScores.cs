@@ -248,7 +248,7 @@ namespace FootyScores
                 if (players != null)
                 {
                     var matchPlayers = GetMatchPlayers(m, players);
-                    htmlBuilder.Append(GetPlayersHtml(matchPlayers.Where(p => p != null)!.Cast<JsonNode>(), scores!, squads!, statsData, status));
+                    htmlBuilder.Append(GetPlayersHtml(matchPlayers.Cast<JsonNode>(), scores!, squads!, statsData, status));
                 }
                 else
                 {
@@ -443,6 +443,7 @@ namespace FootyScores
             if (playerRecord != null)
             {
                 var score = scores[player["id"]!.GetValue<int>().ToString()]!.GetValue<int>();
+
                 var playerStats = playerRecord?.AsObject().ToDictionary(p => p.Key, p => p.Value!.GetValue<int>()) ?? [];
                 var tog = playerStats.GetValueOrDefault("TOG", 0);
 
@@ -454,7 +455,8 @@ namespace FootyScores
 
                 return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td title='Game rank: {gameRank+1}' class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
             }
-            else if (matchStatus == "scheduled")
+            // sub players won't have a playerrecord at the start of the match, so we can fill in the gaps
+            else if (matchStatus != "complete")
             {
                 foreach (var stat in SCORING)
                 {
@@ -564,13 +566,13 @@ namespace FootyScores
         {
             var homeSquadId = match["home_squad_id"]!.GetValue<int>();
             var awaySquadId = match["away_squad_id"]!.GetValue<int>();
-            var matchActive = match["status"]?.GetValue<string>() == "active";
+            var matchIsPlaying = match["status"]?.GetValue<string>() == "playing";
 
             return players.Where(player =>
             {
                 var squadId = player!["squad_id"]!.GetValue<int>();
-                var isPlaying = player!["status"]?.GetValue<string>() == "playing";
-                return (squadId == homeSquadId || squadId == awaySquadId) && (isPlaying || !matchActive);
+                var playerIsPlaying = player!["status"]?.GetValue<string>() == "playing";
+                return (squadId == homeSquadId || squadId == awaySquadId) && (playerIsPlaying || !matchIsPlaying);
             });
         }
 
