@@ -384,6 +384,12 @@ namespace FootyScores
                 })
                 .ThenBy(p =>
                 {
+                    var playerId = p["id"]!.ToString();
+                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? 999;
+                    return tog;
+                })
+                .ThenBy(p =>
+                {
                     var seasonRank = p["stats"]?["season_rank"]?.GetValue<int>();
                     return seasonRank == 0 ? int.MaxValue : seasonRank ?? int.MaxValue;
                 });
