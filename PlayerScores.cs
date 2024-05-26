@@ -380,12 +380,12 @@ namespace FootyScores
                 .OrderByDescending(p =>
                 {
                     var score = scores[p["id"]!.ToString()];
-                    return score != null ? score.GetValue<int>() : 0;
+                    return score != null ? score.GetValue<int>() : int.MinValue;
                 })
                 .ThenBy(p =>
                 {
                     var playerId = p["id"]!.ToString();
-                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? 999;
+                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? int.MaxValue;
                     return tog;
                 })
                 .ThenBy(p =>
