@@ -649,27 +649,29 @@ namespace FootyScores
 				bool isPlayingX = statusX is not null && statusX.Equals("playing", StringComparison.OrdinalIgnoreCase);
 				bool isPlayingY = statusY is not null && statusY.Equals("playing", StringComparison.OrdinalIgnoreCase);
 		
-				// 1. Playing games (sorted by reverse date)
+                // all games are now subsorted by date ascending, but first sorted by the following:
+
+				// 1. Playing games
 				if (isPlayingX || isPlayingY)
-					return isPlayingX == isPlayingY ? DateTime.Compare(dateY, dateX) : (isPlayingX ? -1 : 1);
+					return isPlayingX == isPlayingY ? DateTime.Compare(dateX, dateY) : (isPlayingX ? -1 : 1);
 		
 				bool isScheduledX = statusX is not null && statusX.Equals("scheduled", StringComparison.OrdinalIgnoreCase);
 				bool isScheduledY = statusY is not null && statusY.Equals("scheduled", StringComparison.OrdinalIgnoreCase);
 		
-				// 2. Today's scheduled games (sorted by date)
+				// 2. Today's scheduled games
 				if (isTodayX && isScheduledX || isTodayY && isScheduledY)
 					return isTodayX && isScheduledX == isTodayY && isScheduledY ? DateTime.Compare(dateX, dateY) : (isTodayX && isScheduledX ? -1 : 1);
 		
-				// 3. Today's completed games (sorted by reverse date)
+				// 3. Today's completed games
 				if (isTodayX || isTodayY)
-					return isTodayX == isTodayY ? DateTime.Compare(dateY, dateX) : (isTodayX ? -1 : 1);
+					return isTodayX == isTodayY ? DateTime.Compare(dateX, dateY) : (isTodayX ? -1 : 1);
 		
-				// 4. Other scheduled games (sorted by date)
+				// 4. Other scheduled games (games after today)
 				if (isScheduledX || isScheduledY)
 					return isScheduledX == isScheduledY ? DateTime.Compare(dateX, dateY) : (isScheduledX ? -1 : 1);
 		
-				// 5. Other (sorted by reverse date) (should just be completed games from previous days)
-				return DateTime.Compare(dateY, dateX);
+				// 5. Other (completed games before today)
+				return DateTime.Compare(dateX, dateY);
 			}
 		}
 
