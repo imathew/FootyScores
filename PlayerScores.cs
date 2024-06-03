@@ -4,9 +4,11 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Configuration;
 using System.IO.Compression;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Web;
 
 namespace FootyScores
 {
@@ -73,7 +75,6 @@ namespace FootyScores
 
         private static readonly JsonArray? _squads = JsonNode.Parse(SQUADS)?.AsArray();
         private static readonly JsonArray? _venues = JsonNode.Parse(VENUES)?.AsArray();
-        private static readonly HttpClient _httpClient = new();
         private static readonly Dictionary<string, string> _headers;
         private static readonly BlobServiceClient _blobServiceClient = new(Environment.GetEnvironmentVariable("AZURE_STORAGE_CONNECTION_STRING"));
         private static readonly BlobContainerClient _containerClient = _blobServiceClient.GetBlobContainerClient("playerscores-cache");
@@ -85,13 +86,20 @@ namespace FootyScores
         private static readonly string _apiBaseUrl;
         private static readonly string _apiRoundsUrl;
         private static readonly string _apiPlayersUrl;
+        private static readonly string _apiLeagueUrl;
+        private static readonly string _apiAvatarUrl;
+        private static readonly string _apiDomain;
+        private static readonly string _apiSession;
         private static readonly string _outputCacheFilename;
         private static readonly string _playersCacheFilename;
+        private static readonly string _leagueCacheFilename;
         private static readonly int _playerPreviewCount;
         private static readonly int _playerNameLengthSquish;
         private static readonly int _minCacheLifetimeSeconds;
         private static readonly int _roundChangeDays;
         private static int? _cachedCurrentRoundId;
+
+        private static readonly HttpClient _httpClient;
 
         static PlayerScores()
         {
@@ -104,8 +112,13 @@ namespace FootyScores
             _apiBaseUrl = config["API_BASE_URL"]!;
             _apiRoundsUrl = config["API_ROUNDS_URL"]!;
             _apiPlayersUrl = config["API_PLAYERS_URL"]!;
+            _apiLeagueUrl = config["API_LEAGUE_URL"]!;
+            _apiAvatarUrl = config["API_AVATAR_URL"]!;
+            _apiDomain = config["API_DOMAIN"]!;
+            _apiSession = config["API_SESSION"]!;
             _outputCacheFilename = config["OUTPUT_CACHE_FILENAME"]!;
             _playersCacheFilename = config["PLAYERS_CACHE_FILENAME"]!;
+            _leagueCacheFilename = config["LEAGUE_CACHE_FILENAME"]!;
 
             _playerPreviewCount = config.GetValue("PLAYER_PREVIEW_COUNT", 0);               // the minimum top players to show for upcoming matches (but will always show at least one from each team)
             _playerNameLengthSquish = config.GetValue("PLAYER_NAME_LENGTH_SQUISH", 20);     // squash the font of longer names to reduce table size
@@ -120,6 +133,12 @@ namespace FootyScores
                 { "Access-Control-Allow-Headers", "Content-Type" },
                 { "X-Robots-Tag", "noindex, nofollow"}
             };
+
+            // create a cookie container for use where required
+            var handler = new HttpClientHandler { CookieContainer = new CookieContainer() };
+            handler.CookieContainer.Add(new Cookie("session", _apiSession, "/", _apiDomain));
+
+            _httpClient = new HttpClient(handler);
         }
 
         [Function("PlayerScores")]
@@ -199,7 +218,10 @@ namespace FootyScores
                         var statsData = await GetPlayerStatsAsync(currentRound);
                         var scores = statsData?["playerScores"] as JsonObject;
 
-                        htmlBuilder.Append(GenerateMatchHtml(matches, players!, scores!, _squads!, _venues!, statsData));
+                        var leagueData = (await GetLeagueDataAsync(currentRound, fresh)).data;
+                        var owners = GetCoachData(leagueData);
+
+                        htmlBuilder.Append(GenerateMatchHtml(matches, players!, scores!, _squads!, _venues!, statsData, owners));
                     }
 
                     htmlBuilder.AppendLine(@"</table>");
@@ -227,7 +249,7 @@ namespace FootyScores
             return htmlOutput;
         }
 
-        private static string GenerateMatchHtml(JsonArray matches, JsonArray players, JsonObject scores, JsonArray squads, JsonArray venues, JsonObject? statsData)
+        private static string GenerateMatchHtml(JsonArray matches, JsonArray players, JsonObject scores, JsonArray squads, JsonArray venues, JsonObject? statsData, Dictionary<int, Dictionary<string, object>>? owners)
         {
             var htmlBuilder = new StringBuilder();
 
@@ -238,17 +260,17 @@ namespace FootyScores
                 var status = m!["status"]?.ToString() ?? string.Empty;
 
                 htmlBuilder.AppendLine($@"
-<thead><tr class='blank_header'><td colspan='18'></td></tr>");
+<thead><tr class='blank_header'><td colspan='19'></td></tr>");
 
                 htmlBuilder.Append(GetMatchHtml(m, squads!, venues!));
 
                 htmlBuilder.AppendLine($@"
-<tr class='stats_header'><th colspan='2' class='minion'>Minion</th><th class='pos_head'>Pos</th><th>AF</th><th>ToG</th>{string.Join(string.Empty, SCORING.Select(stat => $"<th title='{stat.Value}' class='stat_head'>{stat.Key}</th>"))}</tr></thead>");
+<tr class='stats_header'><th colspan='3' class='minion'>Minion</th><th class='pos_head'>Pos</th><th>AF</th><th>ToG</th>{string.Join(string.Empty, SCORING.Select(stat => $"<th title='{stat.Value}' class='stat_head'>{stat.Key}</th>"))}</tr></thead>");
 
                 if (players != null)
                 {
                     var matchPlayers = GetMatchPlayers(m, players);
-                    htmlBuilder.Append(GetPlayersHtml(matchPlayers.Cast<JsonNode>(), scores!, squads!, statsData, status));
+                    htmlBuilder.Append(GetPlayersHtml(matchPlayers.Cast<JsonNode>(), scores!, squads!, statsData, status, owners));
                 }
                 else
                 {
@@ -327,6 +349,125 @@ namespace FootyScores
             return (null, lastModified);
         }
 
+        private static Dictionary<int, Dictionary<string, object>> GetCoachData(JsonObject? leagueData)
+        {
+            var playerOwnership = new Dictionary<int, Dictionary<string, object>>();
+
+            if (leagueData == null)
+            {
+                return playerOwnership;
+            }
+
+            if (leagueData != null && leagueData.TryGetPropertyValue("result", out var resultValue) && resultValue is JsonObject result)
+            {
+                if (result.TryGetPropertyValue("teams", out var teamsValue) && teamsValue is JsonArray teams)
+                {
+                    foreach (var team in teams)
+                    {
+                        if (team is JsonObject teamObject)
+                        {
+                            int coachId = teamObject["id"]!.GetValue<int>();
+                            int coachUserId = teamObject["user_id"]!.GetValue<int>();
+                            int coachAvatarVersion = teamObject["avatar_version"]!.GetValue<int>();
+                            string coachName = teamObject["name"]!.GetValue<string>()!;
+
+                            if (teamObject.TryGetPropertyValue("lineup", out var lineupValue) && lineupValue is JsonObject lineup)
+                            {
+                                foreach (var positionKey in new[] { "1", "2", "3", "4", "bench" })
+                                {
+                                    if (lineup.TryGetPropertyValue(positionKey, out var positionValue) && positionValue is JsonArray positionArray)
+                                    {
+                                        foreach (var playerId in positionArray)
+                                        {
+                                            if (playerId is JsonValue playerIdValue)
+                                            {
+                                                int playerIdInt = playerIdValue.GetValue<int>();
+                                                string position = positionKey == "bench" ? "N" : POSITIONS[int.Parse(positionKey)];
+
+                                                var playerData = new Dictionary<string, object>
+                                                {
+                                                    { "coachid", coachId },
+                                                    { "coachuserid", coachUserId },
+                                                    { "coachavatarversion", coachAvatarVersion },
+                                                    { "coachname", coachName },
+                                                    { "position", position },
+                                                    { "isemergency", false },
+                                                    { "iscaptain", false },
+                                                    { "isvicecaptain", false }
+                                                };
+
+                                                playerOwnership[playerIdInt] = playerData;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (lineup.TryGetPropertyValue("emergency", out var emergencyValue) && emergencyValue is JsonObject emergency)
+                                {
+                                    foreach (var emergencyItem in emergency)
+                                    {
+                                        if (emergencyItem.Value is JsonValue emergencyPlayerId && emergencyPlayerId.TryGetValue(out int emergencyPlayerIdInt))
+                                        {
+                                            if (playerOwnership.TryGetValue(emergencyPlayerIdInt, out var playerData))
+                                            {
+                                                playerData["isemergency"] = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (lineup.TryGetPropertyValue("captain", out var captainValue) && captainValue is JsonValue captainPlayerId && captainPlayerId.TryGetValue(out int captainPlayerIdInt))
+                                {
+                                    if (playerOwnership.TryGetValue(captainPlayerIdInt, out var playerData))
+                                    {
+                                        playerData["iscaptain"] = true;
+                                    }
+                                }
+
+                                if (lineup.TryGetPropertyValue("vice_captain", out var viceCaptainValue) && viceCaptainValue is JsonValue viceCaptainPlayerId && viceCaptainPlayerId.TryGetValue(out int viceCaptainPlayerIdInt))
+                                {
+                                    if (playerOwnership.TryGetValue(viceCaptainPlayerIdInt, out var playerData))
+                                    {
+                                        playerData["isvicecaptain"] = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return playerOwnership;
+        }
+
+        private static async Task<(JsonObject? data, DateTimeOffset lastModified)> GetLeagueDataAsync(JsonNode currentRound, bool fresh = false)
+        {
+            // get and/or save to the cache, as appropriate
+            (string? cachedData, DateTimeOffset lastModified) = await GetCachedDataAsync($"{_leagueCacheFilename}",
+                () => GetCacheExpiry(currentRound, false),
+                async () => {
+                    var jsonData = await MakeRequestAsync(_apiLeagueUrl);
+                    var jsonString = jsonData?.ToJsonString();
+                    if (!string.IsNullOrEmpty(jsonString))
+                    {
+                        var jsonObject = JsonNode.Parse(jsonString)?.AsObject();
+                        if (jsonObject != null && jsonObject.TryGetPropertyValue("success", out var successValue) && successValue != null && successValue.GetValue<int>() == 1)
+                        {
+                            return CompressData(jsonString); // cache the compressed data
+                        }
+                    }
+                    return null; // don't cache the data if "success" is not 1 or jsonData is null
+                }
+                , fresh);
+
+            if (cachedData != null)
+            {
+                var decompressedData = DecompressData(cachedData); // return decompressed data
+                return (JsonNode.Parse(decompressedData)?.AsObject(), lastModified);
+            }
+            return (null, lastModified);
+        }
+
         private static string CompressData(string? data)
         {
             if (string.IsNullOrEmpty(data))
@@ -374,7 +515,7 @@ namespace FootyScores
             return statsData;
         }
 
-        private static string GetPlayersHtml(IEnumerable<JsonNode> players, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus)
+        private static string GetPlayersHtml(IEnumerable<JsonNode> players, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus, Dictionary<int, Dictionary<string, object>>? owners)
         {
             var sortedPlayers = players
                 .OrderByDescending(p =>
@@ -400,9 +541,10 @@ namespace FootyScores
 
             foreach (var player in sortedPlayers)
             {
+                int playerId = player["id"]!.GetValue<int>();
                 int playerSquadId = player["squad_id"]!.GetValue<int>();
                 var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == playerSquadId);
-                var playerHtml = GetPlayerHtml(player, scores, squad, statsData, matchStatus, gameRank);
+                var playerHtml = GetPlayerHtml(player, scores, squad, statsData, matchStatus, gameRank, owners?.GetValueOrDefault(playerId));
                 if (!string.IsNullOrEmpty(playerHtml))
                 {
                     htmlBuilder.AppendLine(playerHtml);
@@ -420,19 +562,18 @@ namespace FootyScores
             // return a "pending" notice if there's no data at this point, as it's probably near the start of a live match
             string ret = htmlBuilder.ToString();
             return string.IsNullOrWhiteSpace(ret)
-                ? "<tr class='stats_row'><td></td><td class='pending' colspan='17'>No data yet</td></tr>"
+                ? "<tr class='stats_row'><td></td><td class='pending' colspan='19'>No data yet</td></tr>"
                 : ret;
         }
 
-        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonNode? squad, JsonObject? statsData, string matchStatus, int gameRank)
+        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonNode? squad, JsonObject? statsData, string matchStatus, int gameRank, Dictionary<string, object>? ownerData)
         {
-            //var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == player["squad_id"]!.GetValue<int>());
             var team = squad?["name"]?.GetValue<string>() ?? "Unknown";
             var teamShort = squad?["short_name"]?.GetValue<string>() ?? "UNK";
 
             var playerName = $"{player["first_name"]} {player["last_name"]}";
             var playerClass = playerName.Length >= _playerNameLengthSquish ? "playername long" : "playername";
-            var playerRank = $"Season rank: {player["stats"]?["season_rank"]?.GetValue<int>() ?? 0}";
+            var playerRank = $"AFL rank: {player["stats"]?["season_rank"]?.GetValue<int>() ?? 0}";
             var playerAge = GetAgeString(player["dob"]?.ToString() ?? String.Empty);
 
             var playerPositions = player["positions"]?.AsArray()?.Select(p => p!.GetValue<int>()).ToList() ?? [];
@@ -448,6 +589,59 @@ namespace FootyScores
 
             if (playerRecord != null)
             {
+                string coachHtml;
+                string coachTitle;
+                string coachAvatar;
+                string coachExtra = string.Empty;
+                string playerExtra = string.Empty;
+
+                if (ownerData != null)
+                {
+                    var coachId = (int)ownerData.GetValueOrDefault("coachid", 0);
+                    var coachUserId = (int)ownerData.GetValueOrDefault("coachuserid", 0);
+                    var coachAvatarVersion = (int)ownerData.GetValueOrDefault("coachavatarversion", 1);
+                    var coachName = (string)ownerData.GetValueOrDefault("coachname", string.Empty);
+                    var position = (string)ownerData.GetValueOrDefault("position", string.Empty);
+                    var isEmergency = (bool)ownerData.GetValueOrDefault("isemergency", false);
+                    var isCaptain = (bool)ownerData.GetValueOrDefault("iscaptain", false);
+                    var isViceCaptain = (bool)ownerData.GetValueOrDefault("isvicecaptain", false);
+                    bool isBenched = (position == "N");
+
+                    coachHtml = $" data-coach='{coachId}'";
+                    coachTitle = $"{coachName} ({coachId})";
+                    coachAvatar = $"{_apiAvatarUrl}{coachUserId}.png?v={coachAvatarVersion}";
+
+                    if (isCaptain)
+                    {
+                        playerExtra = "C";
+                        coachExtra = " captain";
+                    }
+                    else if (isViceCaptain)
+                    {
+                        playerExtra = "VC";
+                        coachExtra = " vicecaptain";
+                    }
+                    else if (isEmergency)
+                    {
+                        coachExtra = " emergency";
+                    }
+                    else if (isBenched)
+                    {
+                        coachExtra = " benched";
+                    }
+                }
+                else
+                {
+                    coachHtml = string.Empty;
+                    coachTitle = "No coach";
+                    coachAvatar = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+                }
+
+                if (!string.IsNullOrWhiteSpace(playerExtra))
+                {
+                    playerExtra = $"<span class='playerExtra'> {playerExtra}</span>";
+                }
+
                 var score = scores[player["id"]!.GetValue<int>().ToString()]!.GetValue<int>();
 
                 var playerStats = playerRecord?.AsObject().ToDictionary(p => p.Key, p => p.Value!.GetValue<int>()) ?? [];
@@ -459,7 +653,7 @@ namespace FootyScores
                     statCells.Append($"<td title='{stat.Value * statValue}' class='stat'>{statValue}</td>");
                 }
 
-                return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td title='Game rank: {gameRank+1}' class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
+                return $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{coachTitle}' class='coachAvatar'><img src='{coachAvatar}'/></td><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{playerRank}' class='pos'>{positionString}</td><td class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
             }
             // sub players won't have a playerrecord at the start of the match, so we can fill in the gaps
             else if (matchStatus != "complete")
@@ -491,7 +685,7 @@ namespace FootyScores
             var timeStr = FormatMatchTime(match, venueElem?["timezone"]?.ToString() ?? "Australia/Melbourne");
             var matchScore = FormatMatchScore(match);
 
-            return $@"<tr class='match_header {homeTeam.ToLower()}'><td colspan='18'><span title='{homeTeamFull}' class='teamname home'>{homeTeam}</span>{matchScore["home"]} - {matchScore["away"]}<span title='{awayTeamFull}' class='teamname away'>{awayTeam}</span><span class='matchtime'>{timeStr}</span> @ <span title='{venueAlt}' class='venuename'>{venue}</span></td></tr>";
+            return $@"<tr class='match_header {homeTeam.ToLower()}'><td colspan='19'><span title='{homeTeamFull}' class='teamname home'>{homeTeam}</span>{matchScore["home"]} - {matchScore["away"]}<span title='{awayTeamFull}' class='teamname away'>{awayTeam}</span><span class='matchtime'>{timeStr}</span> @ <span title='{venueAlt}' class='venuename'>{venue}</span></td></tr>";
         }
 
         private static Dictionary<string, string> FormatMatchScore(JsonNode match)
@@ -614,8 +808,12 @@ namespace FootyScores
 
         private static async Task<JsonNode?> MakeRequestAsync(string url)
         {
-            url = $"{url}?t={GetNow().ToUnixTimeSeconds()}";
-            var response = await _httpClient.GetAsync(url);
+            var uriBuilder = new UriBuilder(url);
+            var query = System.Web.HttpUtility.ParseQueryString(uriBuilder.Query);
+            query["t"] = GetNow().ToUnixTimeSeconds().ToString();
+            uriBuilder.Query = query.ToString();
+
+            var response = await _httpClient.GetAsync(uriBuilder.Uri);
             response.EnsureSuccessStatusCode();
 
             using var content = response.Content;
@@ -633,7 +831,7 @@ namespace FootyScores
             }
         }
 
-		private class MatchComparer : IComparer<JsonNode?>
+        private class MatchComparer : IComparer<JsonNode?>
 		{
 			public int Compare(JsonNode? x, JsonNode? y)
 			{
