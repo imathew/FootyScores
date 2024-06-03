@@ -653,7 +653,7 @@ namespace FootyScores
                     statCells.Append($"<td title='{stat.Value * statValue}' class='stat'>{statValue}</td>");
                 }
 
-                return $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{coachTitle}' class='coachAvatar'><img src='{coachAvatar}'/></td><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{playerRank}' class='pos'>{positionString}</td><td class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
+                return $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{coachTitle}' class='coachAvatar'><img src='{coachAvatar}' alt=''/></td><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{playerRank}' class='pos'>{positionString}</td><td class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
             }
             // sub players won't have a playerrecord at the start of the match, so we can fill in the gaps
             else if (matchStatus != "complete")
