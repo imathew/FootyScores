@@ -587,61 +587,64 @@ namespace FootyScores
 
             var statCells = new StringBuilder();
 
+            string playerHtml;
+            string coachHtml;
+            string coachTitle;
+            string coachAvatar;
+            string coachExtra = string.Empty;
+            string playerExtra = string.Empty;
+
+            if (ownerData != null)
+            {
+                var coachId = (int)ownerData.GetValueOrDefault("coachid", 0);
+                var coachUserId = (int)ownerData.GetValueOrDefault("coachuserid", 0);
+                var coachAvatarVersion = (int)ownerData.GetValueOrDefault("coachavatarversion", 1);
+                var coachName = (string)ownerData.GetValueOrDefault("coachname", string.Empty);
+                var position = (string)ownerData.GetValueOrDefault("position", string.Empty);
+                var isEmergency = (bool)ownerData.GetValueOrDefault("isemergency", false);
+                var isCaptain = (bool)ownerData.GetValueOrDefault("iscaptain", false);
+                var isViceCaptain = (bool)ownerData.GetValueOrDefault("isvicecaptain", false);
+                bool isBenched = (position == "N");
+
+                coachHtml = $" data-coach='{coachId}'";
+                coachTitle = $"{coachName} ({coachId})";
+                coachAvatar = $"{_apiAvatarUrl}{coachUserId}.png?v={coachAvatarVersion}";
+
+                if (isCaptain)
+                {
+                    playerExtra = "C";
+                    coachExtra = " captain";
+                }
+                else if (isViceCaptain)
+                {
+                    playerExtra = "VC";
+                    coachExtra = " vicecaptain";
+                }
+                else if (isEmergency)
+                {
+                    coachExtra = " emergency";
+                }
+                else if (isBenched)
+                {
+                    coachExtra = " benched";
+                }
+            }
+            else
+            {
+                coachHtml = string.Empty;
+                coachTitle = "No coach";
+                coachAvatar = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+            }
+
+            if (!string.IsNullOrWhiteSpace(playerExtra))
+            {
+                playerExtra = $"<span class='playerExtra'> {playerExtra}</span>";
+            }
+
+            playerHtml = $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{coachTitle}' class='coachAvatar'><img src='{coachAvatar}' alt=''/></td><td title='{playerRank}' class='pos'>{positionString}</td>";
+
             if (playerRecord != null)
             {
-                string coachHtml;
-                string coachTitle;
-                string coachAvatar;
-                string coachExtra = string.Empty;
-                string playerExtra = string.Empty;
-
-                if (ownerData != null)
-                {
-                    var coachId = (int)ownerData.GetValueOrDefault("coachid", 0);
-                    var coachUserId = (int)ownerData.GetValueOrDefault("coachuserid", 0);
-                    var coachAvatarVersion = (int)ownerData.GetValueOrDefault("coachavatarversion", 1);
-                    var coachName = (string)ownerData.GetValueOrDefault("coachname", string.Empty);
-                    var position = (string)ownerData.GetValueOrDefault("position", string.Empty);
-                    var isEmergency = (bool)ownerData.GetValueOrDefault("isemergency", false);
-                    var isCaptain = (bool)ownerData.GetValueOrDefault("iscaptain", false);
-                    var isViceCaptain = (bool)ownerData.GetValueOrDefault("isvicecaptain", false);
-                    bool isBenched = (position == "N");
-
-                    coachHtml = $" data-coach='{coachId}'";
-                    coachTitle = $"{coachName} ({coachId})";
-                    coachAvatar = $"{_apiAvatarUrl}{coachUserId}.png?v={coachAvatarVersion}";
-
-                    if (isCaptain)
-                    {
-                        playerExtra = "C";
-                        coachExtra = " captain";
-                    }
-                    else if (isViceCaptain)
-                    {
-                        playerExtra = "VC";
-                        coachExtra = " vicecaptain";
-                    }
-                    else if (isEmergency)
-                    {
-                        coachExtra = " emergency";
-                    }
-                    else if (isBenched)
-                    {
-                        coachExtra = " benched";
-                    }
-                }
-                else
-                {
-                    coachHtml = string.Empty;
-                    coachTitle = "No coach";
-                    coachAvatar = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-                }
-
-                if (!string.IsNullOrWhiteSpace(playerExtra))
-                {
-                    playerExtra = $"<span class='playerExtra'> {playerExtra}</span>";
-                }
-
                 var score = scores[player["id"]!.GetValue<int>().ToString()]!.GetValue<int>();
 
                 var playerStats = playerRecord?.AsObject().ToDictionary(p => p.Key, p => p.Value!.GetValue<int>()) ?? [];
@@ -653,7 +656,7 @@ namespace FootyScores
                     statCells.Append($"<td title='{stat.Value * statValue}' class='stat'>{statValue}</td>");
                 }
 
-                return $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{coachTitle}' class='coachAvatar'><img src='{coachAvatar}' alt=''/></td><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{playerRank}' class='pos'>{positionString}</td><td class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
+                return $@"{playerHtml}<td class='af'>{score}</td><td title='{GetTogScore(score, tog)}' class='tog'>{tog}</td>{statCells}</tr>";
             }
             // sub players won't have a playerrecord at the start of the match, so we can fill in the gaps
             else if (matchStatus != "complete")
@@ -663,7 +666,7 @@ namespace FootyScores
                     statCells.Append("<td class='stat'>0</td>");
                 }
 
-                return $@"<tr class='stats_row'><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}</td><td title='{playerRank}' class='pos'>{positionString}</td><td class='af'>0</td><td class='tog'>0</td>{statCells}</tr>";
+                return $@"{playerHtml}<td class='af'>0</td><td class='tog'>0</td>{statCells}</tr>";
             }
 
             return string.Empty;
