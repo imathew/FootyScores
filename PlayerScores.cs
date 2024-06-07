@@ -779,7 +779,7 @@ namespace FootyScores
                 var squadId = player!["squad_id"]!.GetValue<int>();
                 var playerStatus = player!["status"]?.GetValue<string>();
                 var playerIsPlaying = playerStatus == "playing" || playerStatus == "medical_sub";
-                var playerIsNotNamed = playerStatus == "not-playing";
+                var playerIsNotNamed = playerStatus == "not-playing" || playerStatus == "injured";
                 return (squadId == homeSquadId || squadId == awaySquadId)
                     && (playerIsPlaying || (!matchIsPlaying && !playerIsNotNamed));
             });
