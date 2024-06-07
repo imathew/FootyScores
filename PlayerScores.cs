@@ -1,5 +1,6 @@
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Configuration;
@@ -8,6 +9,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System;
 using System.Web;
 
 namespace FootyScores
@@ -544,7 +546,7 @@ namespace FootyScores
                 int playerId = player["id"]!.GetValue<int>();
                 int playerSquadId = player["squad_id"]!.GetValue<int>();
                 var squad = squads.FirstOrDefault(s => s!["id"]!.GetValue<int>() == playerSquadId);
-                var playerHtml = GetPlayerHtml(player, scores, squad, statsData, matchStatus, gameRank, owners?.GetValueOrDefault(playerId));
+                var playerHtml = GetPlayerHtml(player, scores, squad, statsData, matchStatus, owners?.GetValueOrDefault(playerId));
                 if (!string.IsNullOrEmpty(playerHtml))
                 {
                     htmlBuilder.AppendLine(playerHtml);
@@ -566,7 +568,7 @@ namespace FootyScores
                 : ret;
         }
 
-        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonNode? squad, JsonObject? statsData, string matchStatus, int gameRank, Dictionary<string, object>? ownerData)
+        private static string GetPlayerHtml(JsonNode player, JsonObject scores, JsonNode? squad, JsonObject? statsData, string matchStatus, Dictionary<string, object>? ownerData)
         {
             var team = squad?["name"]?.GetValue<string>() ?? "Unknown";
             var teamShort = squad?["short_name"]?.GetValue<string>() ?? "UNK";
@@ -589,6 +591,8 @@ namespace FootyScores
 
             string playerHtml;
             string coachHtml;
+            string coachName;
+            int coachId;
             string coachTitle;
             string coachAvatar;
             string coachExtra = string.Empty;
@@ -596,10 +600,10 @@ namespace FootyScores
 
             if (ownerData != null)
             {
-                var coachId = (int)ownerData.GetValueOrDefault("coachid", 0);
+                coachId = (int)ownerData.GetValueOrDefault("coachid", 0);
+                coachName = (string)ownerData.GetValueOrDefault("coachname", string.Empty);
                 var coachUserId = (int)ownerData.GetValueOrDefault("coachuserid", 0);
                 var coachAvatarVersion = (int)ownerData.GetValueOrDefault("coachavatarversion", 1);
-                var coachName = (string)ownerData.GetValueOrDefault("coachname", string.Empty);
                 var position = (string)ownerData.GetValueOrDefault("position", string.Empty);
                 var isEmergency = (bool)ownerData.GetValueOrDefault("isemergency", false);
                 var isCaptain = (bool)ownerData.GetValueOrDefault("iscaptain", false);
@@ -633,6 +637,8 @@ namespace FootyScores
             {
                 coachHtml = string.Empty;
                 coachTitle = "No coach";
+                coachName = "No coach";
+                coachId = 0;
                 coachAvatar = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
             }
 
@@ -641,7 +647,7 @@ namespace FootyScores
                 playerExtra = $"<span class='playerExtra'> {playerExtra}</span>";
             }
 
-            playerHtml = $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{coachTitle}' class='coachAvatar'><img src='{coachAvatar}' alt=''/></td><td title='{playerRank}' class='pos'>{positionString}</td>";
+            playerHtml = $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{coachTitle}' class='coachAvatar'><a href='/?coach={coachId}' title='{coachName}'><img src='{coachAvatar}' alt=''/></a></td><td title='{playerRank}' class='pos'>{positionString}</td>";
 
             if (playerRecord != null)
             {
