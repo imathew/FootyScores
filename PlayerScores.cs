@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System;
 using System.Web;
+using Microsoft.Extensions.WebEncoders.Testing;
 
 namespace FootyScores
 {
@@ -781,11 +782,10 @@ namespace FootyScores
             {
                 var squadId = player!["squad_id"]!.GetValue<int>();
                 var playerStatus = player!["status"]?.GetValue<string>();
-                var playerIsPlaying = playerStatus == "playing";
-                var playerIsUncertain = playerStatus == "uncertain";
+                var playerIsPlaying = playerStatus == "playing" || playerStatus == "medical_sub";
+                var playerIsNotNamed = playerStatus == "not-playing";
                 return (squadId == homeSquadId || squadId == awaySquadId)
-                    && (playerIsPlaying
-                        || (!matchIsPlaying && playerIsUncertain));
+                    && (playerIsPlaying || (!matchIsPlaying && !playerIsNotNamed));
             });
         }
 
