@@ -210,7 +210,7 @@ namespace FootyScores
                 async () =>
                 {
                     htmlBuilder.Append($@"
-<h1 title='Updated: {lastModified:MMMM d, h:mmtt}' class='refresh-button'>The Masters &ndash; Round {roundStr}</h1>
+<h1 title='Updated: {lastModified:MMMM d, h:mmtt}'><a href='/'>The Masters &ndash; Round {roundStr}</a></h1>
 <table>
 ");
 
