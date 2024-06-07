@@ -780,8 +780,12 @@ namespace FootyScores
             return players.Where(player =>
             {
                 var squadId = player!["squad_id"]!.GetValue<int>();
-                var playerIsPlaying = player!["status"]?.GetValue<string>() == "playing";
-                return (squadId == homeSquadId || squadId == awaySquadId) && (playerIsPlaying || !matchIsPlaying);
+                var playerStatus = player!["status"]?.GetValue<string>();
+                var playerIsPlaying = playerStatus == "playing";
+                var playerIsUncertain = playerStatus == "uncertain";
+                return (squadId == homeSquadId || squadId == awaySquadId)
+                    && (playerIsPlaying
+                        || (!matchIsPlaying && playerIsUncertain));
             });
         }
 
