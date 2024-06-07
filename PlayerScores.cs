@@ -647,7 +647,7 @@ namespace FootyScores
                 playerExtra = $"<span class='playerExtra'> {playerExtra}</span>";
             }
 
-            playerHtml = $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{team}' class='playerteam {team.ToLower()}'>{teamShort}</td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{coachTitle}' class='coachAvatar'><a href='/?coach={coachId}' title='{coachName}'><img src='{coachAvatar}' alt=''/></a></td><td title='{playerRank}' class='pos'>{positionString}</td>";
+            playerHtml = $@"<tr class='stats_row{coachExtra}'{coachHtml}><td title='{team}' class='playerteam {team.ToLower()}'><img src='img/{team.ToLower()}.svg' alt='{teamShort}'></td><td title='{playerAge}' class='{playerClass}'>{playerName}{playerExtra}</td><td title='{coachTitle}' class='coachAvatar'><a href='/?coach={coachId}' title='{coachName}'><img src='{coachAvatar}' alt=''/></a></td><td title='{playerRank}' class='pos'>{positionString}</td>";
 
             if (playerRecord != null)
             {
