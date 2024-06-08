@@ -517,21 +517,26 @@ namespace FootyScores
         private static string GetPlayersHtml(IEnumerable<JsonNode> players, JsonObject scores, JsonArray squads, JsonObject? statsData, string matchStatus, Dictionary<int, Dictionary<string, object>>? owners)
         {
             var sortedPlayers = players
-                .OrderByDescending(p =>
+                // sort players by descending score, using 0 as the default value for null scores
+                .OrderByDescending(player =>
                 {
-                    var score = scores[p["id"]!.ToString()];
-                    return score != null ? score.GetValue<int>() : int.MinValue;
+                    var playerId = player["id"]!.ToString();
+                    var score = scores[playerId];
+                    return score?.GetValue<int>() ?? 0;
                 })
-                .ThenBy(p =>
+                // sort players by ascending TOG (Time on Ground), using 0 as the default value for null TOG
+                .ThenBy(player =>
                 {
-                    var playerId = p["id"]!.ToString();
-                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? int.MaxValue;
+                    var playerId = player["id"]!.ToString();
+                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? 0;
                     return tog;
                 })
-                .ThenBy(p =>
+                // sort players by ascending season rank, treating 0 as the worst/highest value (int.MaxValue)
+                .ThenBy(player =>
                 {
-                    var seasonRank = p["stats"]?["season_rank"]?.GetValue<int>();
-                    return seasonRank == 0 ? int.MaxValue : seasonRank ?? int.MaxValue;
+                    var seasonRankValue = player["stats"]?["season_rank"]?.GetValue<int>() ?? int.MaxValue;
+                    var seasonRank = seasonRankValue == 0 ? int.MaxValue : seasonRankValue;
+                    return seasonRank;
                 });
 
             var htmlBuilder = new StringBuilder();
@@ -571,10 +576,11 @@ namespace FootyScores
             var teamShort = squad?["short_name"]?.GetValue<string>() ?? "UNK";
 
             var playerName = $"{player["first_name"]} {player["last_name"]}";
-            var playerClass = playerName.Length >= _playerNameLengthSquish ? "playername long" : "playername";
+            var playerStatus = player["status"]?.ToString() ?? string.Empty;
+            var playerClass = $"{(playerName.Length >= _playerNameLengthSquish ? "playername long" : "playername")} {playerStatus}";
             var playerRank = $"AFL rank: {player["stats"]?["season_rank"]?.GetValue<int>() ?? 0}";
             var playerAge = GetAgeString(player["dob"]?.ToString() ?? String.Empty);
-
+            
             var playerPositions = player["positions"]?.AsArray()?.Select(p => p!.GetValue<int>()).ToList() ?? [];
             var sortedPositions = playerPositions.Select(p => new { Id = p, Letter = POSITIONS.GetValueOrDefault(p, "") })
                                                  .OrderBy(p => p.Id)
