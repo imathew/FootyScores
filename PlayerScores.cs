@@ -847,44 +847,33 @@ namespace FootyScores
         }
 
         private class MatchComparer : IComparer<JsonNode?>
-		{
-			public int Compare(JsonNode? x, JsonNode? y)
-			{
-				string? statusX = x?["status"]?.ToString();
-				string? statusY = y?["status"]?.ToString();
-		
-				DateTime dateX = x?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
-				DateTime dateY = y?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
-		
-				bool isTodayX = dateX.Date == _nowDate;
-				bool isTodayY = dateY.Date == _nowDate;
-		
-				bool isPlayingX = statusX is not null && statusX.Equals("playing", StringComparison.OrdinalIgnoreCase);
-				bool isPlayingY = statusY is not null && statusY.Equals("playing", StringComparison.OrdinalIgnoreCase);
+        {
+            public int Compare(JsonNode? x, JsonNode? y)
+            {
+                string? statusX = x?["status"]?.ToString();
+                string? statusY = y?["status"]?.ToString();
 
-                // 1. Playing games (sorted by reverse date)
-                if (isPlayingX || isPlayingY)
-                    return isPlayingX == isPlayingY ? DateTime.Compare(dateY, dateX) : (isPlayingX ? -1 : 1);
+                DateTime dateX = x?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
+                DateTime dateY = y?["date"]?.ToString()?.ToDateTime() ?? DateTime.MinValue;
 
-                bool isScheduledX = statusX is not null && statusX.Equals("scheduled", StringComparison.OrdinalIgnoreCase);
-                bool isScheduledY = statusY is not null && statusY.Equals("scheduled", StringComparison.OrdinalIgnoreCase);
+                bool isCurrentX = statusX is not null && statusX.Equals("playing", StringComparison.OrdinalIgnoreCase);
+                bool isCurrentY = statusY is not null && statusY.Equals("playing", StringComparison.OrdinalIgnoreCase);
 
-                // 2. Today's scheduled games (sorted by date)
-                if (isTodayX && isScheduledX || isTodayY && isScheduledY)
-                    return isTodayX && isScheduledX == isTodayY && isScheduledY ? DateTime.Compare(dateX, dateY) : (isTodayX && isScheduledX ? -1 : 1);
+                bool isCompletedX = !isCurrentX && dateX < DateTime.Now;
+                bool isCompletedY = !isCurrentY && dateY < DateTime.Now;
 
-                // 3. Today's completed games (sorted by reverse date)
-                if (isTodayX || isTodayY)
-                    return isTodayX == isTodayY ? DateTime.Compare(dateY, dateX) : (isTodayX ? -1 : 1);
+                // 1. current games
+                if (isCurrentX || isCurrentY)
+                    return isCurrentX == isCurrentY ? DateTime.Compare(dateY, dateX) : (isCurrentX ? -1 : 1);
 
-                // 4. Other scheduled games (sorted by date)
-                if (isScheduledX || isScheduledY)
-                    return isScheduledX == isScheduledY ? DateTime.Compare(dateX, dateY) : (isScheduledX ? -1 : 1);
+                // 2. completed games
+                if (isCompletedX || isCompletedY)
+                    return isCompletedX == isCompletedY ? DateTime.Compare(dateY, dateX) : (isCompletedX ? -1 : 1);
 
-                // 5. Other (sorted by reverse date) (should just be completed games from previous days)
-                return DateTime.Compare(dateY, dateX);
+                // 3. Scheduled games
+                return DateTime.Compare(dateX, dateY);
             }
-		}
+        }
 
         private static async Task<(string? data, DateTimeOffset lastModified)> GetCachedDataAsync(string blobName, Func<DateTimeOffset> getCacheExpiry, Func<Task<string?>> fetchDataAsync, bool fresh = false)
         {
