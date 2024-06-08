@@ -528,7 +528,7 @@ namespace FootyScores
                 .ThenBy(player =>
                 {
                     var playerId = player["id"]!.ToString();
-                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? 0;
+                    var tog = statsData?[playerId]?["TOG"]?.GetValue<int>() ?? int.MaxValue;
                     return tog;
                 })
                 // sort players by ascending season rank, treating 0 as the worst/highest value (int.MaxValue)
